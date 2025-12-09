@@ -1,0 +1,45 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+        {
+            "type": "cppbuild",
+            "label": "C/C++: g++.exe build active file",
+            "command": "C:/msys64/ucrt64/bin/g++.exe",
+            "args": [
+                "-g",
+                "-std=c++17",
+                "-I${workspaceFolder}/include",
+                "-I${workspaceFolder}/imgui",
+                "-I${workspaceFolder}/imgui/backends",
+                "-I${workspaceFolder}/src",
+                "${workspaceFolder}/src/main.cpp",
+                "${workspaceFolder}/src/glad.c",
+                "${workspaceFolder}/imgui/imgui.cpp",
+                "${workspaceFolder}/imgui/imgui_draw.cpp",
+                "${workspaceFolder}/imgui/imgui_tables.cpp",
+                "${workspaceFolder}/imgui/imgui_widgets.cpp",
+                "${workspaceFolder}/imgui/imgui_demo.cpp",
+                "${workspaceFolder}/imgui/backends/imgui_impl_glfw.cpp",
+                "${workspaceFolder}/imgui/backends/imgui_impl_opengl3.cpp",
+                "-L${workspaceFolder}/lib",
+                "-lglfw3dll",
+                "-lopengl32",
+                "-lgdi32",
+                "-o",
+                "${workspaceFolder}/app.exe"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "compiler: C:/msys64/ucrt64/bin/g++.exe"
+        }
+    ]
+}
+
