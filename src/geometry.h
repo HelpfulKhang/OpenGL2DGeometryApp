@@ -7,6 +7,9 @@
 #include <string>
 #include <glad/glad.h>
 #include "shader.h"
+#include "imgui.h"
+#include "imgui_impl_opengl3.h"
+#include "imgui_impl_glfw.h"
 
 struct Vec2 { float x, y; };
 struct Color { float r, g, b; };
@@ -162,58 +165,27 @@ public:
         glLineWidth(1.0f);
     }
 
-    // simple stroke-text: supports digits 0-9, '-' and '.'
-    void drawText(const Vec2 &pos, const std::string &text, float charHeight, const Color &c) {
-        // build stroke definitions on first use
-        static std::map<char, std::vector<std::vector<Vec2>>> strokes;
-        if (strokes.empty()) {
-            // coordinate system for chars: x in [0,1], y in [0,1]
-            // '0'
-            strokes['0'] = { {{0.1f,0.1f},{0.9f,0.1f},{0.9f,0.9f},{0.1f,0.9f},{0.1f,0.1f}} };
-            strokes['1'] = { {{0.5f,0.1f},{0.5f,0.9f}} };
-            strokes['2'] = { {{0.1f,0.9f},{0.9f,0.9f},{0.9f,0.5f},{0.1f,0.1f},{0.9f,0.1f}} };
-            strokes['3'] = { {{0.1f,0.9f},{0.9f,0.9f},{0.5f,0.5f},{0.9f,0.5f},{0.9f,0.1f},{0.1f,0.1f}} };
-            strokes['4'] = { {{0.1f,0.9f},{0.1f,0.5f},{0.9f,0.5f},{0.9f,0.9f}}, {{0.9f,0.1f},{0.9f,0.5f}} };
-            strokes['5'] = { {{0.9f,0.9f},{0.1f,0.9f},{0.1f,0.5f},{0.9f,0.5f},{0.9f,0.1f},{0.1f,0.1f}} };
-            strokes['6'] = { {{0.9f,0.9f},{0.1f,0.5f},{0.1f,0.1f},{0.9f,0.1f},{0.9f,0.5f},{0.1f,0.5f}} };
-            strokes['7'] = { {{0.1f,0.9f},{0.9f,0.9f},{0.5f,0.1f}} };
-            strokes['8'] = { {{0.5f,0.5f},{0.1f,0.9f},{0.9f,0.9f},{0.1f,0.1f},{0.9f,0.1f},{0.5f,0.5f}} };
-            strokes['9'] = { {{0.9f,0.1f},{0.9f,0.9f},{0.1f,0.9f},{0.1f,0.5f},{0.9f,0.5f}} };
-            strokes['-'] = { {{0.1f,0.5f},{0.9f,0.5f}} };
-            strokes['.'] = { {{0.8f,0.1f},{0.85f,0.1f}} }; // small dot as tiny segment
-        }
+    void drawText(const std::string& text, float x, float y, const Color& color) {
+        // 1. An toàn: Nếu chưa load font, dùng font mặc định thay vì crash app
+        ImFont* fontToUse = font ? font : ImGui::GetFont(); 
+        
+        // 2. Chuyển đổi màu từ float (0.0-1.0) sang U32 (0-255) cho ImGui
+        ImU32 col32 = IM_COL32((int)(color.r * 255), (int)(color.g * 255), (int)(color.b * 255), 255);
 
-        // sizing: charHeight is world-space height; width ~ 0.6 * height
-        float charW = charHeight * 0.6f;
-        float spacing = charW * 0.18f;
+        ImGui::PushFont(fontToUse);
+        
+        // 3. Dùng GetForegroundDrawList để vẽ đè lên mọi thứ tại toạ độ màn hình (Screen Coordinates)
+        // Lưu ý: x, y ở đây phải là toạ độ PIXEL trên màn hình cửa sổ
+        ImGui::GetForegroundDrawList()->AddText(ImVec2(x, y), col32, text.c_str());
 
-        // for each character and each stroke, build stroke points in world coords and draw
-        float xCursor = pos.x;
-        for (char ch : text) {
-            auto it = strokes.find(ch);
-            if (it == strokes.end()) {
-                xCursor += charW + spacing; // unknown char -> advance
-                continue;
-            }
-            for (const auto &stroke : it->second) {
-                std::vector<Vec2> strokeWorld;
-                strokeWorld.reserve(stroke.size());
-                for (const Vec2 &pt : stroke) {
-                    float wx = xCursor + pt.x * charW;
-                    float wy = pos.y + pt.y * charHeight;
-                    strokeWorld.push_back({ wx, wy });
-                }
-                uploadAndDraw(buildVertexBuffer(strokeWorld, c), GL_LINE_STRIP);
-            }
-            xCursor += charW + spacing;
-        }
+        ImGui::PopFont();
     }
 
 private:
     Shader &shader;
-    GLuint VAO = 0;
-    GLuint VBO = 0;
     float left, right, bottom, top;
+    GLuint VAO, VBO;
+    ImFont* font;
 
     inline float worldToNDCx(float x) const {
         return (2.0f * (x - left) / (right - left) - 1.0f);
