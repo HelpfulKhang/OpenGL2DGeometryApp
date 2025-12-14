@@ -3,7 +3,7 @@ in vec3 vertexColor;
 out vec4 FragColor;
 
 // if u_useOverride == 1 then use u_overrideColor;
-otherwise use vertexColor
+// otherwise use vertexColor
 uniform int u_useOverride;
 uniform vec3 u_overrideColor;
 uniform float u_overrideAlpha;
