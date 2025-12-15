@@ -28,7 +28,24 @@ void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, in
 void canvas_cursor_position_callback(GLFWwindow* window, double xpos, double ypos);
 void canvas_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 
-// ---- Data Structures (Giữ nguyên từ code cũ) ----
+// ---- Math Helpers ----
+float distSq(Vec2 p1, Vec2 p2) {
+    return (p1.x - p2.x)*(p1.x - p2.x) + (p1.y - p2.y)*(p1.y - p2.y);
+}
+
+// Khoảng cách từ điểm p đến đoạn thẳng ab
+float distToSegment(Vec2 p, Vec2 a, Vec2 b) {
+    Vec2 ab = {b.x - a.x, b.y - a.y};
+    Vec2 ap = {p.x - a.x, p.y - a.y};
+    float l2 = ab.x*ab.x + ab.y*ab.y;
+    if (l2 == 0.0f) return std::sqrt(distSq(p, a));
+    float t = (ap.x * ab.x + ap.y * ab.y) / l2;
+    t = std::max(0.0f, std::min(1.0f, t));
+    Vec2 projection = {a.x + t * ab.x, a.y + t * ab.y};
+    return std::sqrt(distSq(p, projection));
+}
+
+// ---- Data Structures ----
 enum AppMode { MODE_NAV = 0, MODE_POINT = 1 };
 
 enum ShapeKind {
@@ -50,7 +67,51 @@ struct Shape {
     int segments = 64;
 };
 
-// Hàm vẽ shape (Helper)
+// Hàm tính khoảng cách từ chuột đến hình (cho chức năng Selection)
+float getDistToShape(const Shape& s, Vec2 p) {
+    switch (s.kind) {
+        case SH_POINT:
+            return std::sqrt(distSq(s.p1, p));
+        case SH_LINE:
+            return distToSegment(p, s.p1, s.p2);
+        case SH_CIRCLE:
+            // Khoảng cách tới đường viền tròn
+            return std::abs(std::sqrt(distSq(s.p1, p)) - s.radius);
+        case SH_POLYLINE: {
+            float minDist = 1e9;
+            if (s.poly.size() < 2) return 1e9;
+            for (size_t i = 0; i < s.poly.size() - 1; ++i) {
+                float d = distToSegment(p, s.poly[i], s.poly[i+1]);
+                if (d < minDist) minDist = d;
+            }
+            return minDist;
+        }
+        case SH_ELLIPSE: {
+            // Lấy mẫu xấp xỉ để tính khoảng cách
+            int checkSegments = 32; 
+            float minDist = 1e9;
+            Vec2 prev;
+            for(int i=0; i<=checkSegments; ++i) {
+                float theta = 2.0f * 3.14159f * i / float(checkSegments);
+                float x0 = s.a * cos(theta);
+                float y0 = s.b * sin(theta);
+                Vec2 curr = {
+                    s.p1.x + x0 * cosf(s.angle) - y0 * sinf(s.angle),
+                    s.p1.y + x0 * sinf(s.angle) + y0 * cosf(s.angle)
+                };
+                if (i > 0) minDist = std::min(minDist, distToSegment(p, prev, curr));
+                prev = curr;
+            }
+            return minDist;
+        }
+        case SH_PARABOLA: 
+             // Xấp xỉ đơn giản: khoảng cách tới điểm đầu/cuối
+             return std::min(std::sqrt(distSq({s.parab_xmin, s.parab_k*s.parab_xmin*s.parab_xmin}, p)),
+                             std::sqrt(distSq({s.parab_xmax, s.parab_k*s.parab_xmax*s.parab_xmax}, p)));
+        default: return 1e9;
+    }
+}
+
 static void drawShape(const Shape &s, GeometryRenderer &geom) {
     switch (s.kind) {
         case SH_POINT: geom.drawPoint(s.p1, s.color, s.pointSize); break;
@@ -84,6 +145,14 @@ struct AppState {
     bool polylineActive = false;
     std::vector<Vec2> tempPoly;
 
+    // Selection & Snapping
+    bool isHoveringAny = false; // Có đang bắt dính điểm nào không (cho Snapping)
+    Vec2 hoverPos{0.0f, 0.0f};  // Tọa độ điểm bắt dính
+    
+    int hoveredShapeIndex = -1;  // Hình đang trỏ chuột vào (Hover)
+    int selectedShapeIndex = -1; // Hình đã click chọn (Selected)
+
+    // Params
     int circleSegments = 96;
     int ellipseSegments = 128;
     float ellipse_b = 0.4f;
@@ -97,9 +166,6 @@ struct AppState {
     std::vector<std::vector<Shape>> undoStack;
     std::vector<std::vector<Shape>> redoStack;
     size_t maxUndo = 60;
-
-    bool isHoveringAny = false;    // Có đang trỏ vào điểm nào không?
-    Vec2 hoverPos{0.0f, 0.0f};     // Tọa độ của điểm đang trỏ vào
 };
 
 // Undo/Redo Helpers
@@ -121,7 +187,7 @@ static void doRedo(AppState &app) {
     app.redoStack.pop_back();
 }
 
-// ---- Font Helper (New) ----
+// ---- Helper Functions ----
 void tryLoadFont(ImGuiIO& io, const char* path, float size) {
     std::ifstream f(path);
     if (!f.good()) {
@@ -131,17 +197,11 @@ void tryLoadFont(ImGuiIO& io, const char* path, float size) {
     io.Fonts->AddFontFromFileTTF(path, size, NULL, io.Fonts->GetGlyphRangesVietnamese());
 }
 
-// ---- Text Drawing Helper (New logic for Merged Window) ----
-// Chuyển đổi từ tọa độ thế giới (Geometry) sang tọa độ màn hình (ImGui Pixel)
 void drawLabel(const std::string& text, float wx, float wy, float l, float r, float b, float t, int winW, int winH, const Color& col) {
-    // World to NDC
     float ndcX = 2.0f * (wx - l) / (r - l) - 1.0f;
     float ndcY = 2.0f * (wy - b) / (t - b) - 1.0f;
-
-    // NDC to Screen (ImGui coordinates: Top-Left is 0,0)
     float screenX = (ndcX + 1.0f) * 0.5f * winW;
-    float screenY = (1.0f - ndcY) * 0.5f * winH; // Đảo ngược Y vì ImGui Y chạy từ trên xuống
-
+    float screenY = (1.0f - ndcY) * 0.5f * winH;
     ImU32 col32 = IM_COL32((int)(col.r*255), (int)(col.g*255), (int)(col.b*255), 255);
     ImGui::GetForegroundDrawList()->AddText(ImVec2(screenX, screenY), col32, text.c_str());
 }
@@ -159,41 +219,27 @@ static std::string fmtTick(float v) {
     return ss.str();
 }
 
-// Helpers for Mouse to World conversion
 static void screenToWorld(GLFWwindow* window, double sx, double sy, float &wx, float &wy) {
     AppState* app = static_cast<AppState*>(glfwGetWindowUserPointer(window));
     if (!app || !app->geom) { wx = wy = 0.0f; return; }
     int width, height;
-    glfwGetFramebufferSize(window, &width, &height); // Dùng FramebufferSize chính xác hơn WindowSize trên HighDPI
+    glfwGetFramebufferSize(window, &width, &height);
     float l, r, b, t;
     app->geom->getView(l, r, b, t);
     wx = l + (float)(sx / (double)width) * (r - l);
     wy = b + (float)((height - sy) / (double)height) * (t - b);
 }
 
-// Helpers Save/Load (Giữ nguyên logic cũ nhưng rút gọn để code ngắn hơn)
-bool saveDrawing(const AppState& app, const char* path); // Implement ở cuối file
-bool loadDrawing(AppState& app, const char* path); // Implement ở cuối file
-
-// Hàm kiểm tra khoảng cách bình phương cho nhanh (tránh sqrt liên tục)
-float distSq(Vec2 a, Vec2 b) {
-    return (a.x - b.x)*(a.x - b.x) + (a.y - b.y)*(a.y - b.y);
-}
-
-// Trả về true nếu tìm thấy điểm snap, và gán tọa độ vào outPos
+// Logic tìm điểm Snap (Bắt dính)
 bool getClosestSnapPoint(AppState* app, GLFWwindow* window, double mx, double my, Vec2& outPos) {
     if (!app || !app->geom) return false;
-
-    // 1. Tính toán ngưỡng bắt điểm trong hệ tọa độ World
     int w, h; glfwGetFramebufferSize(window, &w, &h);
     float l, r, b, t; app->geom->getView(l, r, b, t);
     
-    // Ngưỡng bắt điểm là 12 pixel -> quy đổi ra World Unit
     double pxToWorld = (r - l) / (double)w;
-    float threshold = 12.0f * (float)pxToWorld;
-    float minDst2 = threshold * threshold; // Bình phương để so sánh
+    float threshold = 12.0f * (float)pxToWorld; // 12px threshold
+    float minDst2 = threshold * threshold;
     
-    // Chuyển chuột từ Screen -> World
     float wx = l + (float)(mx / w) * (r - l);
     float wy = b + (float)((h - my) / h) * (t - b);
     Vec2 mouseWorld = {wx, wy};
@@ -201,52 +247,76 @@ bool getClosestSnapPoint(AppState* app, GLFWwindow* window, double mx, double my
     bool found = false;
     Vec2 bestPos = {0,0};
 
-    // Helper kiểm tra một điểm candidate
     auto checkPoint = [&](Vec2 p) {
         float d2 = distSq(p, mouseWorld);
-        if (d2 < minDst2) {
-            minDst2 = d2;
-            bestPos = p;
-            found = true;
-        }
+        if (d2 < minDst2) { minDst2 = d2; bestPos = p; found = true; }
     };
 
-    // 2. Duyệt qua TẤT CẢ các hình để tìm điểm đặc biệt
     for (const Shape& s : app->shapes) {
         switch (s.kind) {
-            case SH_POINT:
-                checkPoint(s.p1);
-                break;
-            case SH_LINE:
-                checkPoint(s.p1); // Đầu 1
-                checkPoint(s.p2); // Đầu 2
-                break;
-            case SH_CIRCLE:
-            case SH_ELLIPSE:
-                checkPoint(s.p1); // Tâm
-                // Nếu muốn bắt điểm trên vành tròn thì phức tạp hơn, tạm thời bắt tâm
-                break;
-            case SH_POLYLINE:
-                for (const auto& v : s.poly) checkPoint(v); // Tất cả các đỉnh
-                break;
-            case SH_PARABOLA:
-                // Tính điểm đầu/cuối của Parabola: y = kx^2
+            case SH_POINT: checkPoint(s.p1); break;
+            case SH_LINE: checkPoint(s.p1); checkPoint(s.p2); break;
+            case SH_CIRCLE: 
+            case SH_ELLIPSE: checkPoint(s.p1); break;
+            case SH_POLYLINE: for (const auto& v : s.poly) checkPoint(v); break;
+            case SH_PARABOLA: 
                 checkPoint({s.parab_xmin, s.parab_k * s.parab_xmin * s.parab_xmin});
                 checkPoint({s.parab_xmax, s.parab_k * s.parab_xmax * s.parab_xmax});
-                break;
-            case SH_HYPERBOLA:
-                // Tính điểm đầu/cuối (xấp xỉ theo tham số t) - Tùy chỉnh theo công thức vẽ của bạn
-                // Giả sử Hyperbola vẽ theo cosh/sinh hoặc 1/x
-                // Tạm thời bỏ qua nếu phức tạp, hoặc thêm logic tương tự Parabola
                 break;
             default: break;
         }
     }
-
-    if (found) {
-        outPos = bestPos;
-    }
+    if (found) outPos = bestPos;
     return found;
+}
+
+// Logic Save/Load
+static fs::path resolveSavePath(const char* userPath) {
+    fs::path p(userPath);
+    if (p.is_absolute()) return p;
+    return fs::absolute(p);
+}
+bool saveDrawing(const AppState& app, const char* path) {
+    if (!app.geom) return false;
+    std::ofstream ofs(resolveSavePath(path).string());
+    if (!ofs) return false;
+    float l,r,b,t; app.geom->getView(l,r,b,t);
+    ofs << l << ' ' << r << ' ' << b << ' ' << t << '\n';
+    ofs << app.shapes.size() << '\n';
+    for (const Shape &s : app.shapes) {
+        ofs << (int)s.kind << ' ' << s.color.r << ' ' << s.color.g << ' ' << s.color.b << ' ';
+        if (s.kind == SH_POINT) ofs << s.p1.x << ' ' << s.p1.y << ' ' << s.pointSize;
+        else if (s.kind == SH_LINE) ofs << s.p1.x << ' ' << s.p1.y << ' ' << s.p2.x << ' ' << s.p2.y;
+        else if (s.kind == SH_CIRCLE) ofs << s.p1.x << ' ' << s.p1.y << ' ' << s.radius << ' ' << s.segments;
+        else if (s.kind == SH_POLYLINE) {
+            ofs << s.poly.size();
+            for (auto& p : s.poly) ofs << ' ' << p.x << ' ' << p.y;
+        }
+        ofs << '\n';
+    }
+    return true;
+}
+bool loadDrawing(AppState& app, const char* path) {
+    std::ifstream ifs(resolveSavePath(path).string());
+    if (!ifs) return false;
+    float l,r,b,t; ifs >> l >> r >> b >> t;
+    if (app.geom) app.geom->setView(l,r,b,t);
+    size_t count; ifs >> count;
+    app.shapes.clear();
+    for (size_t i=0; i<count; ++i) {
+        int k; float r,g,b;
+        ifs >> k >> r >> g >> b;
+        Shape s; s.kind = (ShapeKind)k; s.color = {r,g,b};
+        if (s.kind == SH_POINT) ifs >> s.p1.x >> s.p1.y >> s.pointSize;
+        else if (s.kind == SH_LINE) ifs >> s.p1.x >> s.p1.y >> s.p2.x >> s.p2.y;
+        else if (s.kind == SH_CIRCLE) ifs >> s.p1.x >> s.p1.y >> s.radius >> s.segments;
+        else if (s.kind == SH_POLYLINE) {
+            size_t n; ifs >> n; s.poly.resize(n);
+            for(size_t j=0; j<n; ++j) ifs >> s.poly[j].x >> s.poly[j].y;
+        }
+        app.shapes.push_back(s);
+    }
+    return true;
 }
 
 // Global dragging state
@@ -258,204 +328,194 @@ int main()
 {
     if (!glfwInit()) return -1;
 
-    // 1. Tạo 1 cửa sổ duy nhất
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     
-    // Tạo cửa sổ rộng để chứa cả Canvas và Menu
     GLFWwindow* window = glfwCreateWindow(1280, 720, "OpenGL Geometry App", NULL, NULL);
     if (!window) { glfwTerminate(); return -1; }
     
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // Bật V-Sync
+    glfwSwapInterval(1);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
 
-    // 2. Setup Callbacks
     glfwSetFramebufferSizeCallback(window, canvas_framebuffer_size_callback);
     glfwSetScrollCallback(window, canvas_scroll_callback);
     glfwSetMouseButtonCallback(window, canvas_mouse_button_callback);
     glfwSetCursorPosCallback(window, canvas_cursor_position_callback);
     glfwSetKeyCallback(window, canvas_key_callback);
 
-    // 3. Setup ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     ImGui::StyleColorsDark();
     
-    // Tải font tiếng Việt (Segoe UI có sẵn trên Windows)
-    tryLoadFont(io, "C:\\Windows\\Fonts\\arial.ttf", 24.0f);
+    // Tải font lớn (24.0f)
+    tryLoadFont(io, "C:\\Windows\\Fonts\\segoeui.ttf", 24.0f);
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330 core");
 
-    // 4. Setup App State & Shader
     Shader shader("shaders/vertex.glsl", "shaders/fragment.glsl");
     GeometryRenderer geom(shader);
     geom.setView(-2.0f, 2.0f, -1.5f, 1.5f);
 
     AppState app;
     app.geom = &geom;
-    glfwSetWindowUserPointer(window, &app); // Link AppState vào window
+    glfwSetWindowUserPointer(window, &app);
 
-    Color gridCol{0.3f, 0.3f, 0.3f}; // Grid màu xám nhạt
-    Color axisCol{0.6f, 0.6f, 0.6f}; // Trục màu sáng hơn
-    Color labelCol{0.9f, 0.9f, 0.9f}; // Chữ màu trắng
+    Color gridCol{0.3f, 0.3f, 0.3f};
+    Color axisCol{0.6f, 0.6f, 0.6f};
+    Color labelCol{0.9f, 0.9f, 0.9f};
 
-    // --- VÒNG LẶP CHÍNH ---
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        // A. Start ImGui Frame
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        // B. Lấy kích thước hiển thị
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
         glViewport(0, 0, display_w, display_h);
-
-        // C. Clear màn hình
         glClearColor(0.12f, 0.12f, 0.12f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // D. VẼ HÌNH HỌC (Geometry Layer)
         float l, r, b, t;
         geom.getView(l, r, b, t);
         
-        // Tính toán khoảng cách grid
         float worldWidth = r - l;
         float spacing = 0.25f;
         while (spacing * 10.0f < worldWidth) spacing *= 2.0f;
         while (spacing * 2.0f > worldWidth && spacing > 1e-6f) spacing *= 0.5f;
 
-        // Vẽ Grid & Axis bằng OpenGL
         geom.drawGrid(spacing, gridCol, axisCol);
 
-        // Vẽ Shapes
         shader.use();
         shader.setInt("u_useOverride", 0);
-        for (const Shape &s : app.shapes) {
+        
+        // Vẽ các hình chính
+        for (size_t i = 0; i < app.shapes.size(); ++i) {
+            // Nếu hình này đang được Select, bỏ qua để vẽ sau (cho nó nổi lên trên)
+            if ((int)i == app.selectedShapeIndex) continue;
+            drawShape(app.shapes[i], geom);
+        }
+
+        // --- 1. HIGHLIGHT SELECTED SHAPE (Click Selection) ---
+        // Vẽ hình đang chọn với màu Đậm (Đỏ Cam) và nét to hơn
+        if (app.selectedShapeIndex != -1 && app.selectedShapeIndex < (int)app.shapes.size()) {
+            Shape s = app.shapes[app.selectedShapeIndex];
+            s.color = {1.0f, 0.4f, 0.0f}; // Màu cam đậm
+            if (s.kind == SH_POINT) s.pointSize *= 1.5f; // Point to hơn
+            
+            // Vẽ đè lên
             drawShape(s, geom);
         }
 
-        // --- HIGHLIGHT SNAP POINT ---
+        // --- 2. HIGHLIGHT HOVERED SHAPE (Mouse Over) ---
+        // Chỉ highlight nếu hình đó CHƯA được chọn (tránh bị trùng màu)
+        if (app.hoveredShapeIndex != -1 && app.hoveredShapeIndex != app.selectedShapeIndex && app.hoveredShapeIndex < (int)app.shapes.size()) {
+            Shape s = app.shapes[app.hoveredShapeIndex];
+            s.color = {1.0f, 1.0f, 0.6f}; // Màu vàng nhạt (Preview)
+            drawShape(s, geom);
+        }
+
+        // --- 3. HIGHLIGHT SNAP POINT (Khi vẽ) ---
+        // Dấu chấm đỏ để biết chuột đang bắt dính vào đâu
         if (app.isHoveringAny) {
-            // Tính bán kính theo màn hình (ví dụ 10px) quy ra world unit
-            // (r - l) là chiều rộng thế giới thực của màn hình
             float pxSize = 10.0f; 
             float worldSize = pxSize * (r - l) / (float)display_w; 
-            
-            // 1. Vẽ vòng tròn rỗng màu đỏ bao quanh
-            geom.drawCircle(app.hoverPos, worldSize, {1.0f, 0.2f, 0.2f}, 24);
-            
-            // 2. Vẽ thêm 1 điểm nhỏ đặc màu vàng ở tâm cho dễ nhìn
+            geom.drawCircle(app.hoverPos, worldSize, {1.0f, 0.2f, 0.2f}, 24); 
             geom.drawPoint(app.hoverPos, {1.0f, 1.0f, 0.0f}, 5.0f);
         }
-        // ----------------------------
 
-        // Vẽ Labels bằng ImGui (Overlay)
-        // X Labels
+        // --- VẼ NHÃN & TRỤC ---
+        float labelOffset = (t - b) * 0.02f;
         float startX = std::floor(l / spacing) * spacing;
         float endX = std::ceil(r / spacing) * spacing;
-        float labelOffset = (t - b) * 0.02f;
         
+        // Số trên trục X
         for (float x = startX; x <= endX + 1e-6f; x += spacing) {
-            // Xác định vị trí Y cho label (bám trục X nếu nhìn thấy, hoặc bám cạnh dưới màn hình)
             float worldLabelY = (b <= 0.0f && t >= 0.0f) ? (-labelOffset) : (b + labelOffset);
             drawLabel(fmtTick(x), x, worldLabelY, l, r, b, t, display_w, display_h, labelCol);
         }
-        // Y Labels
+        
+        // Số trên trục Y
         float startY = std::floor(b / spacing) * spacing;
         float endY = std::ceil(t / spacing) * spacing;
         for (float y = startY; y <= endY + 1e-6f; y += spacing) {
-            if (std::abs(y) < 1e-5f) continue; // Tránh vẽ trùng gốc tọa độ
+            if (std::abs(y) < 1e-5f) continue;
             float worldLabelX = (l <= 0.0f && r >= 0.0f) ? (labelOffset) : (l + labelOffset);
             drawLabel(fmtTick(y), worldLabelX, y, l, r, b, t, display_w, display_h, labelCol);
         }
 
-        // --- VẼ TÊN TRỤC X, Y (ĐÃ SỬA) ---
-        // 1. Tính toán biên phải vùng nhìn thấy được (trừ đi bề rộng Menu 320px)
-        //    Giúp chữ "x" không bao giờ chui tọt vào dưới Menu
-        float menuWidth = 320.0f;
+        // --- TÊN TRỤC X, Y ---
+        float menuWidth = 320.0f; 
         float visibleRight = l + (r - l) * ((float)(display_w - menuWidth) / display_w);
-
-        // 2. Vẽ chữ "x":
-        //    - X: Ở mép phải vùng nhìn thấy (visibleRight) lùi lại 1 khoảng (0.6 * spacing)
-        //    - Y: Ở dưới trục hoành (-0.4 * spacing) để né các con số
         drawLabel("x", visibleRight - 0.2f * spacing, 0.2f * spacing, l, r, b, t, display_w, display_h, labelCol);
-
-        // 3. Vẽ chữ "y":
-        //    - X: Bên trái trục tung (-0.4 * spacing) để né số
-        //    - Y: Sát mép trên màn hình (t), trừ nhẹ một xíu cho đẹp
         drawLabel("y", -0.2f * spacing, t - 0.05f * spacing, l, r, b, t, display_w, display_h, labelCol);
-        // ---------------------------------
 
-        // E. VẼ GIAO DIỆN (UI Layer)
-        // Menu bên phải cố định
+        // --- UI ---
         ImGui::SetNextWindowPos(ImVec2((float)display_w - menuWidth, 0));
         ImGui::SetNextWindowSize(ImVec2(menuWidth, (float)display_h));
         
         ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
         
         ImGui::Text("Mode:");
-        if (ImGui::RadioButton("Navigate (Pan/Zoom)", app.mode == MODE_NAV)) app.mode = MODE_NAV;
+        if (ImGui::RadioButton("Navigate", app.mode == MODE_NAV)) app.mode = MODE_NAV;
         ImGui::SameLine();
         if (ImGui::RadioButton("Draw", app.mode == MODE_POINT)) app.mode = MODE_POINT;
 
         ImGui::Separator();
         ImGui::ColorEdit3("Color", &app.drawColor.r);
         ImGui::SameLine();
-        if (ImGui::Button("Apply Color")) app.paintColor = app.drawColor;
+        if (ImGui::Button("Apply")) {
+            // 1. Cập nhật màu vẽ cho các hình vẽ sau này (như cũ)
+            app.paintColor = app.drawColor;
+
+            // 2. [MỚI] Nếu đang chọn 1 hình, đổi màu hình đó ngay lập tức
+            if (app.selectedShapeIndex != -1 && app.selectedShapeIndex < (int)app.shapes.size()) {
+                pushUndo(app); // Quan trọng: Lưu Undo để có thể quay lại màu cũ
+                app.shapes[app.selectedShapeIndex].color = app.drawColor;
+            }
+        }
 
         ImGui::Separator();
+        
+        // Hiển thị thông tin Selection
+        if (app.selectedShapeIndex != -1) {
+            ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "Selected Shape #%d", app.selectedShapeIndex);
+            if (ImGui::Button("Deselect")) app.selectedShapeIndex = -1;
+        } else {
+            ImGui::TextDisabled("No shape selected");
+        }
+        ImGui::Separator();
+
         if (app.mode == MODE_POINT) {
             const char* toolNames[] = { "Point", "Line", "Circle", "Ellipse", "Parabola", "Hyperbola", "Polyline" };
             int curTool = (int)app.currentTool;
             if (ImGui::Combo("Tool", &curTool, toolNames, IM_ARRAYSIZE(toolNames))) {
                 app.currentTool = (Tool)curTool;
                 app.awaitingSecond = false;
-                app.polylineActive = false;
-                app.tempPoly.clear();
+                app.polylineActive = false; app.tempPoly.clear();
             }
-            
-            // Tool params UI
             if (app.currentTool == TOOL_POINT) ImGui::SliderFloat("Size", &app.pointSize, 1.0f, 20.0f);
-            if (app.currentTool == TOOL_CIRCLE) ImGui::SliderInt("Segments", &app.circleSegments, 16, 128);
-            if (app.currentTool == TOOL_ELLIPSE) {
-                ImGui::InputFloat("b Radius", &app.ellipse_b, 0.1f);
-                ImGui::SliderAngle("Angle", &app.ellipse_angle);
-            }
-            if (app.currentTool == TOOL_PARABOLA) {
-                 ImGui::InputFloat("k", &app.parab_k, 0.1f);
-                 if (ImGui::Button("Add Parabola")) {
-                     pushUndo(app);
-                     Shape s; s.kind = SH_PARABOLA; s.parab_k = app.parab_k; 
-                     s.parab_xmin = app.parab_xmin; s.parab_xmax = app.parab_xmax;
-                     s.color = app.paintColor; s.segments = app.parab_segments;
-                     app.shapes.push_back(s);
-                 }
-            }
-            if (app.currentTool == TOOL_POLYLINE) {
-                if (app.polylineActive) {
-                    ImGui::Text("Points: %zu", app.tempPoly.size());
-                    if (ImGui::Button("Finish Polyline")) {
-                        if (app.tempPoly.size() >= 2) {
-                            pushUndo(app);
-                            Shape s; s.kind = SH_POLYLINE; s.poly = app.tempPoly; s.color = app.paintColor;
-                            app.shapes.push_back(s);
-                        }
-                        app.polylineActive = false; app.tempPoly.clear();
+            if (app.currentTool == TOOL_CIRCLE) ImGui::SliderInt("Segs", &app.circleSegments, 16, 128);
+            if (app.currentTool == TOOL_POLYLINE && app.polylineActive) {
+                if (ImGui::Button("Finish Polyline")) {
+                    if (app.tempPoly.size() >= 2) {
+                        pushUndo(app);
+                        Shape s; s.kind = SH_POLYLINE; s.poly = app.tempPoly; s.color = app.paintColor;
+                        app.shapes.push_back(s);
                     }
-                } else {
-                    if (ImGui::Button("Start Polyline")) { app.polylineActive = true; app.tempPoly.clear(); }
+                    app.polylineActive = false; app.tempPoly.clear();
                 }
+            } else if (app.currentTool == TOOL_POLYLINE) {
+                if (ImGui::Button("Start Polyline")) { app.polylineActive = true; app.tempPoly.clear(); }
             }
         } else {
-             ImGui::TextWrapped("Use Mouse Drag to Pan.\nScroll to Zoom.");
+             ImGui::TextWrapped("Click to Select Shapes.\nMouse over to see Highlight.");
         }
 
         ImGui::Separator();
@@ -474,16 +534,14 @@ int main()
         if (ImGui::Button("Redo")) doRedo(app);
         ImGui::EndDisabled();
 
-        ImGui::End(); // End Controls Window
+        ImGui::End();
 
-        // F. Kết thúc
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         
         glfwSwapBuffers(window);
     }
 
-    // Cleanup
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
@@ -492,37 +550,32 @@ int main()
     return 0;
 }
 
-// ================= CALLBACKS IMPLEMENTATION =================
+// ================= CALLBACKS =================
 
 void canvas_framebuffer_size_callback(GLFWwindow* /*window*/, int width, int height) {
     glViewport(0, 0, width, height);
 }
 
 void canvas_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-    // Nếu ImGui đang nhập liệu (ví dụ gõ tên file), không xử lý phím tắt
     if (ImGui::GetIO().WantCaptureKeyboard) return;
-
     AppState* g = static_cast<AppState*>(glfwGetWindowUserPointer(window));
     if (!g) return;
-    if (key == GLFW_KEY_Z && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL)) {
-        doUndo(*g);
-    }
-    if (key == GLFW_KEY_Y && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL)) {
-        doRedo(*g);
+    if (key == GLFW_KEY_Z && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL)) doUndo(*g);
+    if (key == GLFW_KEY_Y && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL)) doRedo(*g);
+    
+    // Phím ESC để bỏ chọn
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+        g->selectedShapeIndex = -1;
     }
 }
 
 void canvas_scroll_callback(GLFWwindow* window, double /*xoffset*/, double yoffset) {
-    // QUAN TRỌNG: Nếu chuột đang nằm trên UI, không cho zoom Canvas
     if (ImGui::GetIO().WantCaptureMouse) return;
-
     AppState* g = static_cast<AppState*>(glfwGetWindowUserPointer(window));
     if (!g || !g->geom) return;
 
-    double mx, my;
-    glfwGetCursorPos(window, &mx, &my);
-    float wx, wy;
-    screenToWorld(window, mx, my, wx, wy);
+    double mx, my; glfwGetCursorPos(window, &mx, &my);
+    float wx, wy; screenToWorld(window, mx, my, wx, wy);
 
     float l, r, b, t; g->geom->getView(l, r, b, t);
     const float zoomSpeed = 1.15f;
@@ -534,40 +587,105 @@ void canvas_scroll_callback(GLFWwindow* window, double /*xoffset*/, double yoffs
     g->geom->setView(newL, newR, newB, newT);
 }
 
+void canvas_cursor_position_callback(GLFWwindow* window, double xpos, double ypos) {
+    AppState* g = static_cast<AppState*>(glfwGetWindowUserPointer(window));
+    if (!g || !g->geom) return;
+
+    // --- LOGIC HOVER & SNAP (Khi không kéo chuột) ---
+    if (!dragging) {
+        int w, h; glfwGetFramebufferSize(window, &w, &h);
+        float l, r, b, t; g->geom->getView(l, r, b, t);
+        
+        // 1. Kiểm tra Snap Point (cho Drawing)
+        Vec2 snapPos;
+        if (getClosestSnapPoint(g, window, xpos, ypos, snapPos)) {
+            g->isHoveringAny = true;
+            g->hoverPos = snapPos;
+        } else {
+            g->isHoveringAny = false;
+        }
+
+        // 2. Kiểm tra Hover Shape (cho Selection)
+        // Chuyển chuột sang World
+        float wx = l + (float)(xpos / w) * (r - l);
+        float wy = b + (float)((h - ypos) / h) * (t - b);
+        Vec2 mouseWorld = {wx, wy};
+
+        // Tăng ngưỡng chọn lên 12 pixel cho dễ chọn
+        float pixelScale = (r - l) / w;
+        float threshold = 12.0f * pixelScale;
+
+        int bestIdx = -1;
+        float bestDist = threshold;
+
+        // Duyệt ngược để ưu tiên hình vẽ sau (nằm trên)
+        for (int i = (int)g->shapes.size() - 1; i >= 0; --i) {
+            float d = getDistToShape(g->shapes[i], mouseWorld);
+            
+            // --- FIX: Ưu tiên chọn Point ---
+            // Nếu hình là Point, ta "ăn gian" trừ bớt khoảng cách đi một chút (Bias)
+            // Điều này làm cho Point luôn được coi là "gần chuột hơn" so với Line
+            // khi chúng nằm cùng một chỗ.
+            if (g->shapes[i].kind == SH_POINT) {
+                // Trừ đi khoảng 5 pixel (quy đổi ra world unit)
+                d -= 5.0f * pixelScale; 
+            }
+            // -------------------------------
+
+            if (d < bestDist) {
+                bestDist = d;
+                bestIdx = i;
+            }
+        }
+        g->hoveredShapeIndex = bestIdx;
+    }
+
+    // --- LOGIC PANNING ---
+    if (!dragging) return;
+
+    int width, height; glfwGetFramebufferSize(window, &width, &height);
+    float l, r, b, t; g->geom->getView(l, r, b, t);
+
+    double dx = xpos - lastX;
+    double dy = ypos - lastY;
+    float worldDX = (float)(-dx / (double)width * (r - l));
+    float worldDY = (float)( dy / (double)height * (t - b));
+    g->geom->setView(l + worldDX, r + worldDX, b + worldDY, t + worldDY);
+
+    lastX = xpos;
+    lastY = ypos;
+}
+
 void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, int /*mods*/) {
     if (ImGui::GetIO().WantCaptureMouse) return;
-
     AppState* g = static_cast<AppState*>(glfwGetWindowUserPointer(window));
     if (!g || !g->geom) return;
 
     double mx, my; glfwGetCursorPos(window, &mx, &my);
-    
-    // Tọa độ mặc định (nếu không bắt dính)
-    float wx, wy;
-    screenToWorld(window, mx, my, wx, wy);
+    float wx, wy; screenToWorld(window, mx, my, wx, wy);
     Vec2 effectivePos = {wx, wy};
 
-    // Kiểm tra Snap
-    Vec2 snapPos;
-    if (getClosestSnapPoint(g, window, mx, my, snapPos)) {
-        effectivePos = snapPos; // Dùng tọa độ snap
-        std::cout << "Snapped!\n";
-    }
+    // Nếu bắt dính được điểm snap, dùng tọa độ điểm đó
+    if (g->isHoveringAny) effectivePos = g->hoverPos;
 
     if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+        
+        // --- XỬ LÝ CLICK SELECTION ---
+        // Mỗi khi click, nếu đang hover hình nào thì Select hình đó
+        g->selectedShapeIndex = g->hoveredShapeIndex;
+        if (g->selectedShapeIndex != -1) {
+            std::cout << "Selected Shape: " << g->selectedShapeIndex << std::endl;
+        }
+        
+        // --- LOGIC VẼ (Nếu đang ở chế độ Draw) ---
         if (g->mode == MODE_POINT) {
-            // LOGIC VẼ (Thay thế toàn bộ phần switch cũ bằng phần này)
-            // Lưu ý: Tất cả các tool đều dùng effectivePos thay vì {wx, wy}
-            
             switch (g->currentTool) {
                 case TOOL_POINT: {
-                    // Cho phép vẽ chồng điểm nếu muốn, hoặc chặn tùy bạn
                     pushUndo(*g);
                     Shape s; s.kind = SH_POINT; s.p1 = effectivePos; 
                     s.pointSize = g->pointSize; s.color = g->paintColor;
                     g->shapes.push_back(s);
                 } break;
-
                 case TOOL_LINE: {
                     if (!g->awaitingSecond) {
                         g->tempP1 = effectivePos; g->awaitingSecond = true;
@@ -578,21 +696,18 @@ void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, in
                         g->awaitingSecond = false;
                     }
                 } break;
-
                 case TOOL_CIRCLE: {
                     if (!g->awaitingSecond) {
                         g->tempP1 = effectivePos; g->awaitingSecond = true;
                     } else {
                         pushUndo(*g);
-                        float dx = effectivePos.x - g->tempP1.x;
-                        float dy = effectivePos.y - g->tempP1.y;
+                        float dx = effectivePos.x - g->tempP1.x; float dy = effectivePos.y - g->tempP1.y;
                         Shape s; s.kind = SH_CIRCLE; s.p1 = g->tempP1; 
                         s.radius = std::sqrt(dx*dx + dy*dy); s.segments = g->circleSegments; s.color = g->paintColor;
                         g->shapes.push_back(s);
                         g->awaitingSecond = false;
                     }
                 } break;
-
                 case TOOL_ELLIPSE: {
                      if (!g->awaitingSecond) {
                         g->tempP1 = effectivePos; g->awaitingSecond = true;
@@ -606,27 +721,23 @@ void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, in
                         g->awaitingSecond = false;
                     }
                 } break;
-
                 case TOOL_POLYLINE: {
                     if (!g->polylineActive) { g->polylineActive = true; g->tempPoly.clear(); }
                     g->tempPoly.push_back(effectivePos);
                 } break;
-                
-                // Các tool Parabola/Hyperbola vẽ bằng nút UI nên không cần sửa ở đây
                 default: break;
             }
             return;
         }
-
-        // Panning
+        
+        // Panning start (Nếu đang ở Mode NAV và click ra ngoài hình)
         dragging = true;
         glfwGetCursorPos(window, &lastX, &lastY);
         return;
     }
 
     if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) dragging = false;
-    
-    // Right click cancel
+
     if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
         g->awaitingSecond = false;
         if (g->polylineActive) {
@@ -638,98 +749,4 @@ void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, in
             g->polylineActive = false; g->tempPoly.clear();
         }
     }
-}
-
-void canvas_cursor_position_callback(GLFWwindow* window, double xpos, double ypos) {
-    AppState* g = static_cast<AppState*>(glfwGetWindowUserPointer(window));
-    if (!g || !g->geom) return;
-
-    // --- PHẦN 1: Xử lý Highlight / Snapping (Khi KHÔNG kéo chuột) ---
-    if (!dragging) {
-        Vec2 snapPos;
-        // Hàm getClosestSnapPoint sẽ kiểm tra xem chuột có gần điểm nào không
-        // Lưu ý: Bạn phải đảm bảo đã thêm hàm getClosestSnapPoint ở bước trước
-        if (getClosestSnapPoint(g, window, xpos, ypos, snapPos)) {
-            g->isHoveringAny = true;
-            g->hoverPos = snapPos; // Lưu vị trí bắt dính để vẽ vòng tròn đỏ
-        } else {
-            g->isHoveringAny = false;
-        }
-    }
-
-    // --- PHẦN 2: Xử lý Panning (Di chuyển màn hình khi đang kéo) ---
-    if (!dragging) return; // Nếu không đang dragging thì dừng tại đây
-
-    int width, height; 
-    glfwGetFramebufferSize(window, &width, &height);
-    float l, r, b, t; 
-    g->geom->getView(l, r, b, t);
-
-    // Tính toán lượng di chuyển
-    double dx = xpos - lastX;
-    double dy = ypos - lastY;
-    float worldDX = (float)(-dx / (double)width * (r - l));
-    float worldDY = (float)( dy / (double)height * (t - b));
-    
-    // Cập nhật View mới
-    g->geom->setView(l + worldDX, r + worldDX, b + worldDY, t + worldDY);
-
-    // Cập nhật vị trí chuột cũ
-    lastX = xpos;
-    lastY = ypos;
-}
-
-// ---- Implement Save/Load (Simplified) ----
-static fs::path resolveSavePath(const char* userPath) {
-    fs::path p(userPath);
-    if (p.is_absolute()) return p;
-    return fs::absolute(p);
-}
-
-bool saveDrawing(const AppState& app, const char* path) {
-    if (!app.geom) return false;
-    std::ofstream ofs(resolveSavePath(path).string());
-    if (!ofs) return false;
-
-    float l,r,b,t; app.geom->getView(l,r,b,t);
-    ofs << l << ' ' << r << ' ' << b << ' ' << t << '\n';
-    ofs << app.shapes.size() << '\n';
-    for (const Shape &s : app.shapes) {
-        ofs << (int)s.kind << ' ' << s.color.r << ' ' << s.color.g << ' ' << s.color.b << ' ';
-        if (s.kind == SH_POINT) ofs << s.p1.x << ' ' << s.p1.y << ' ' << s.pointSize;
-        else if (s.kind == SH_LINE) ofs << s.p1.x << ' ' << s.p1.y << ' ' << s.p2.x << ' ' << s.p2.y;
-        else if (s.kind == SH_CIRCLE) ofs << s.p1.x << ' ' << s.p1.y << ' ' << s.radius << ' ' << s.segments;
-        else if (s.kind == SH_POLYLINE) {
-            ofs << s.poly.size();
-            for (auto& p : s.poly) ofs << ' ' << p.x << ' ' << p.y;
-        }
-        // ... (Thêm các loại khác tương tự nếu cần full save/load)
-        ofs << '\n';
-    }
-    return true;
-}
-
-bool loadDrawing(AppState& app, const char* path) {
-    std::ifstream ifs(resolveSavePath(path).string());
-    if (!ifs) return false;
-    float l,r,b,t; ifs >> l >> r >> b >> t;
-    if (app.geom) app.geom->setView(l,r,b,t);
-    
-    size_t count; ifs >> count;
-    app.shapes.clear();
-    for (size_t i=0; i<count; ++i) {
-        int k; float r,g,b;
-        ifs >> k >> r >> g >> b;
-        Shape s; s.kind = (ShapeKind)k; s.color = {r,g,b};
-        if (s.kind == SH_POINT) ifs >> s.p1.x >> s.p1.y >> s.pointSize;
-        else if (s.kind == SH_LINE) ifs >> s.p1.x >> s.p1.y >> s.p2.x >> s.p2.y;
-        else if (s.kind == SH_CIRCLE) ifs >> s.p1.x >> s.p1.y >> s.radius >> s.segments;
-        else if (s.kind == SH_POLYLINE) {
-            size_t n; ifs >> n; s.poly.resize(n);
-            for(size_t j=0; j<n; ++j) ifs >> s.poly[j].x >> s.poly[j].y;
-        }
-        // Các loại khác bạn tự thêm nốt nếu cần
-        app.shapes.push_back(s);
-    }
-    return true;
 }
