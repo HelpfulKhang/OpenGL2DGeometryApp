@@ -209,9 +209,7 @@ int main()
     ImGui::StyleColorsDark();
     
     // Tải font tiếng Việt (Segoe UI có sẵn trên Windows)
-    tryLoadFont(io, "C:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
-    // Nếu không có, thử font Arial
-    // tryLoadFont(io, "C:\\Windows\\Fonts\\arial.ttf", 18.0f);
+    tryLoadFont(io, "C:\\Windows\\Fonts\\arial.ttf", 24.0f);
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330 core");
@@ -287,10 +285,25 @@ int main()
             drawLabel(fmtTick(y), worldLabelX, y, l, r, b, t, display_w, display_h, labelCol);
         }
 
+        // --- VẼ TÊN TRỤC X, Y (ĐÃ SỬA) ---
+        // 1. Tính toán biên phải vùng nhìn thấy được (trừ đi bề rộng Menu 320px)
+        //    Giúp chữ "x" không bao giờ chui tọt vào dưới Menu
+        float menuWidth = 320.0f;
+        float visibleRight = l + (r - l) * ((float)(display_w - menuWidth) / display_w);
+
+        // 2. Vẽ chữ "x":
+        //    - X: Ở mép phải vùng nhìn thấy (visibleRight) lùi lại 1 khoảng (0.6 * spacing)
+        //    - Y: Ở dưới trục hoành (-0.4 * spacing) để né các con số
+        drawLabel("x", visibleRight - 0.2f * spacing, 0.2f * spacing, l, r, b, t, display_w, display_h, labelCol);
+
+        // 3. Vẽ chữ "y":
+        //    - X: Bên trái trục tung (-0.4 * spacing) để né số
+        //    - Y: Sát mép trên màn hình (t), trừ nhẹ một xíu cho đẹp
+        drawLabel("y", -0.2f * spacing, t - 0.05f * spacing, l, r, b, t, display_w, display_h, labelCol);
+        // ---------------------------------
 
         // E. VẼ GIAO DIỆN (UI Layer)
         // Menu bên phải cố định
-        float menuWidth = 320.0f;
         ImGui::SetNextWindowPos(ImVec2((float)display_w - menuWidth, 0));
         ImGui::SetNextWindowSize(ImVec2(menuWidth, (float)display_h));
         
