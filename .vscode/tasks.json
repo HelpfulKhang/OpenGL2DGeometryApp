@@ -21,6 +21,8 @@
                 "${workspaceFolder}/imgui/imgui_demo.cpp",
                 "${workspaceFolder}/imgui/backends/imgui_impl_glfw.cpp",
                 "${workspaceFolder}/imgui/backends/imgui_impl_opengl3.cpp",
+                "${workspaceFolder}/imgui/misc/cpp/imgui_stdlib.cpp",
+                "-I${workspaceFolder}/imgui/misc/cpp",
                 "-L${workspaceFolder}/lib",
                 "-lglfw3dll",
                 "-lopengl32",

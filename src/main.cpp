@@ -18,7 +18,15 @@
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
 
+#include "imgui_stdlib.h"
+#include <set>
+
 namespace fs = std::filesystem;
+
+// Biến toàn cục quản lý chuột
+static bool dragging = false;         // Panning màn hình
+static int draggingPointIdx = -1;     // Index điểm đang bị kéo (nếu có)
+static double lastX = 0.0, lastY = 0.0;
 
 // ---- Forward declarations ----
 void canvas_framebuffer_size_callback(GLFWwindow* window, int width, int height);
@@ -65,7 +73,34 @@ struct Shape {
     float hyper_a = 1.0f, hyper_b = 0.5f, hyper_tmin = 0.0f, hyper_tmax = 1.0f;
     std::vector<Vec2> poly;
     int segments = 64;
+    std::string name = "";  // Tên hiển thị (VD: "A", "B")
+    bool isFixed = true;    // Mặc định là Cố định (không kéo được)
 };
+
+std::string getNextPointName(const std::vector<Shape>& shapes) {
+    std::set<std::string> usedNames;
+    for (const auto& s : shapes) {
+        if (s.kind == SH_POINT && !s.name.empty()) {
+            usedNames.insert(s.name);
+        }
+    }
+
+    // Thử A -> Z
+    for (char c = 'A'; c <= 'Z'; ++c) {
+        std::string name(1, c);
+        if (usedNames.find(name) == usedNames.end()) return name;
+    }
+
+    // Thử A1 -> Z99 (Dự phòng)
+    for (int i = 1; i < 100; ++i) {
+        for (char c = 'A'; c <= 'Z'; ++c) {
+            std::string name = std::string(1, c) + std::to_string(i);
+            if (usedNames.find(name) == usedNames.end()) return name;
+        }
+    }
+    
+    return "P?"; // Fallback cuối cùng
+}
 
 // Hàm tính khoảng cách từ chuột đến hình (cho chức năng Selection)
 float getDistToShape(const Shape& s, Vec2 p) {
@@ -125,15 +160,24 @@ static void drawShape(const Shape &s, GeometryRenderer &geom) {
     }
 }
 
+// [Trong file src/main.cpp]
+
 enum Tool {
-    TOOL_POINT = 0, TOOL_LINE, TOOL_CIRCLE, TOOL_ELLIPSE, TOOL_PARABOLA, TOOL_HYPERBOLA, TOOL_POLYLINE
+    TOOL_POINT_CURSOR = 0, // Đổi tên từ TOOL_POINT
+    TOOL_POINT_INPUT,      // Thêm mới
+    TOOL_LINE, 
+    TOOL_CIRCLE, 
+    TOOL_ELLIPSE, 
+    TOOL_PARABOLA, 
+    TOOL_HYPERBOLA, 
+    TOOL_POLYLINE
 };
 
 struct AppState {
     GeometryRenderer* geom = nullptr;
     std::vector<Shape> shapes;
     AppMode mode = MODE_NAV;
-    Tool currentTool = TOOL_POINT;
+    Tool currentTool = TOOL_POINT_CURSOR;
 
     Color drawColor{0.0f, 0.4f, 1.0f};
     float pointSize = 6.0f;
@@ -169,6 +213,9 @@ struct AppState {
 
     bool showGrid = true;
     bool showAxis = true;
+
+    float inputX = 0.0f; // Biến lưu giá trị nhập X
+    float inputY = 0.0f; // Biến lưu giá trị nhập Y
 };
 
 // Undo/Redo Helpers
@@ -206,7 +253,7 @@ void drawLabel(const std::string& text, float wx, float wy, float l, float r, fl
     float screenX = (ndcX + 1.0f) * 0.5f * winW;
     float screenY = (1.0f - ndcY) * 0.5f * winH;
     ImU32 col32 = IM_COL32((int)(col.r*255), (int)(col.g*255), (int)(col.b*255), 255);
-    ImGui::GetForegroundDrawList()->AddText(ImVec2(screenX, screenY), col32, text.c_str());
+    ImGui::GetBackgroundDrawList()->AddText(ImVec2(screenX, screenY), col32, text.c_str());
 }
 
 static std::string fmtTick(float v) {
@@ -322,10 +369,6 @@ bool loadDrawing(AppState& app, const char* path) {
     return true;
 }
 
-// Global dragging state
-static bool dragging = false;
-static double lastX = 0.0, lastY = 0.0;
-
 // ================= MAIN =================
 int main()
 {
@@ -403,6 +446,26 @@ int main()
             // Nếu hình này đang được Select, bỏ qua để vẽ sau (cho nó nổi lên trên)
             if ((int)i == app.selectedShapeIndex) continue;
             drawShape(app.shapes[i], geom);
+
+            // --- SỬA ĐOẠN VẼ TÊN ĐIỂM ---
+            if (app.shapes[i].kind == SH_POINT && !app.shapes[i].name.empty()) {
+                Vec2 p = app.shapes[i].p1;
+                
+                // Chuyển đổi World -> NDC (Normalized Device Coordinates)
+                // Công thức: (val - min) / (max - min) * 2 - 1
+                float ndcX = (2.0f * (p.x - l) / (r - l)) - 1.0f;
+                float ndcY = (2.0f * (p.y - b) / (t - b)) - 1.0f;
+
+                // Chuyển đổi NDC -> Screen Coordinates (Pixel)
+                // Lưu ý: ImGui gốc tọa độ (0,0) là góc TRÊN-TRÁI
+                // OpenGL gốc tọa độ (-1,-1) là góc DƯỚI-TRÁI
+                float screenX = (ndcX + 1.0f) * 0.5f * display_w;
+                float screenY = (1.0f - ndcY) * 0.5f * display_h;
+
+                // Offset text lên trên và sang phải một chút để không đè vào điểm
+                geom.drawText(app.shapes[i].name, screenX + 10.0f, screenY - 20.0f, app.shapes[i].color);
+            }
+            // -----------------------------
         }
 
         // --- 1. HIGHLIGHT SELECTED SHAPE (Click Selection) ---
@@ -499,6 +562,24 @@ int main()
         // Hiển thị thông tin Selection
         if (app.selectedShapeIndex != -1) {
             ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "Selected Shape #%d", app.selectedShapeIndex);
+            if (app.selectedShapeIndex < (int)app.shapes.size()) {
+                Shape& selShape = app.shapes[app.selectedShapeIndex];
+                
+                // Nếu là ĐIỂM thì hiện ô nhập tên và checkbox Fixed
+                if (selShape.kind == SH_POINT) {
+                    ImGui::InputText("Name", &selShape.name); // Cần include imgui_stdlib.h
+                    
+                    // Checkbox Fixed
+                    // Logic: Nếu Fixed = false (Dynamic) thì có thể kéo chuột
+                    if (ImGui::Checkbox("Fixed Position", &selShape.isFixed)) {
+                        // Có thể thêm logic gì đó nếu cần khi toggle
+                    }
+                    if (!selShape.isFixed) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(Dynamic)");
+                    }
+                }
+            }
             if (ImGui::Button("Deselect")) app.selectedShapeIndex = -1;
         } else {
             ImGui::TextDisabled("No shape selected");
@@ -506,14 +587,37 @@ int main()
         ImGui::Separator();
 
         if (app.mode == MODE_POINT) {
-            const char* toolNames[] = { "Point", "Line", "Circle", "Ellipse", "Parabola", "Hyperbola", "Polyline" };
+            const char* toolNames[] = { 
+                "Point (Cursor)", // Tên mới
+                "Point (Input)",  // Tên mới
+                "Line", "Circle", "Ellipse", "Parabola", "Hyperbola", "Polyline" 
+            };
+            
             int curTool = (int)app.currentTool;
             if (ImGui::Combo("Tool", &curTool, toolNames, IM_ARRAYSIZE(toolNames))) {
                 app.currentTool = (Tool)curTool;
                 app.awaitingSecond = false;
                 app.polylineActive = false; app.tempPoly.clear();
             }
-            if (app.currentTool == TOOL_POINT) ImGui::SliderFloat("Size", &app.pointSize, 1.0f, 20.0f);
+
+            // 2. Hiện giao diện nhập liệu CHỈ KHI chọn Tool "Point (Input)"
+            if (app.currentTool == TOOL_POINT_INPUT) {
+                ImGui::Text("Coordinates:");
+                ImGui::InputFloat("X", &app.inputX, 0.5f, 1.0f, "%.2f");
+                ImGui::InputFloat("Y", &app.inputY, 0.5f, 1.0f, "%.2f");
+                if (ImGui::Button("Add Point")) {
+                    pushUndo(app);
+                    Shape s;
+                    s.kind = SH_POINT;
+                    s.p1 = { app.inputX, app.inputY };
+                    s.pointSize = app.pointSize;
+                    s.color = app.paintColor;
+                    app.shapes.push_back(s);
+                    s.name = getNextPointName(app.shapes);
+                    s.isFixed = true;
+                }
+            }
+            if (app.currentTool == TOOL_POINT_CURSOR) ImGui::SliderFloat("Size", &app.pointSize, 1.0f, 20.0f);
             if (app.currentTool == TOOL_CIRCLE) ImGui::SliderInt("Segs", &app.circleSegments, 16, 128);
             if (app.currentTool == TOOL_POLYLINE && app.polylineActive) {
                 if (ImGui::Button("Finish Polyline")) {
@@ -628,29 +732,57 @@ void canvas_cursor_position_callback(GLFWwindow* window, double xpos, double ypo
         float pixelScale = (r - l) / w;
         float threshold = 12.0f * pixelScale;
 
+        // Biến lưu ứng viên là HÌNH KHÁC (Line, Circle...)
         int bestIdx = -1;
-        float bestDist = threshold;
+        float bestDist = threshold; 
+
+        // Biến lưu ứng viên là ĐIỂM (Point) - Được ưu tiên cao nhất
+        int bestPointIdx = -1;
+        float bestPointDist = threshold; 
 
         // Duyệt ngược để ưu tiên hình vẽ sau (nằm trên)
         for (int i = (int)g->shapes.size() - 1; i >= 0; --i) {
             float d = getDistToShape(g->shapes[i], mouseWorld);
             
-            // --- FIX: Ưu tiên chọn Point ---
-            // Nếu hình là Point, ta "ăn gian" trừ bớt khoảng cách đi một chút (Bias)
-            // Điều này làm cho Point luôn được coi là "gần chuột hơn" so với Line
-            // khi chúng nằm cùng một chỗ.
-            if (g->shapes[i].kind == SH_POINT) {
-                // Trừ đi khoảng 5 pixel (quy đổi ra world unit)
-                d -= 5.0f * pixelScale; 
-            }
-            // -------------------------------
-
-            if (d < bestDist) {
-                bestDist = d;
-                bestIdx = i;
+            // Chỉ xét nếu khoảng cách nhỏ hơn ngưỡng (threshold)
+            if (d < threshold) {
+                if (g->shapes[i].kind == SH_POINT) {
+                    // Nếu là POINT: So sánh với các Point khác
+                    if (d < bestPointDist) {
+                        bestPointDist = d;
+                        bestPointIdx = i;
+                    }
+                } else {
+                    // Nếu là HÌNH KHÁC: So sánh với các hình khác
+                    if (d < bestDist) {
+                        bestDist = d;
+                        bestIdx = i;
+                    }
+                }
             }
         }
-        g->hoveredShapeIndex = bestIdx;
+
+        // QUYẾT ĐỊNH CUỐI CÙNG:
+        // Nếu tìm thấy bất kỳ ĐIỂM nào hợp lệ, chọn nó ngay (Ưu tiên tuyệt đối).
+        // Chỉ khi không có điểm nào, ta mới lấy hình khác gần nhất.
+        if (bestPointIdx != -1) {
+            g->hoveredShapeIndex = bestPointIdx;
+        } else {
+            g->hoveredShapeIndex = bestIdx;
+        }
+    }
+
+    // --- LOGIC KÉO ĐIỂM (DYNAMIC POINT) ---
+    if (draggingPointIdx != -1) {
+        // Lấy tọa độ chuột hiện tại (đã convert sang World)
+        double mx, my; glfwGetCursorPos(window, &mx, &my);
+        float wx, wy; screenToWorld(window, mx, my, wx, wy);
+        
+        // Cập nhật vị trí điểm
+        if (draggingPointIdx < (int)g->shapes.size()) {
+            g->shapes[draggingPointIdx].p1 = {wx, wy};
+        }
+        return; // Đã kéo điểm thì không làm gì khác
     }
 
     // --- LOGIC PANNING ---
@@ -669,7 +801,8 @@ void canvas_cursor_position_callback(GLFWwindow* window, double xpos, double ypo
     lastY = ypos;
 }
 
-void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, int /*mods*/) {
+// [Thay thế toàn bộ hàm canvas_mouse_button_callback cũ bằng hàm này]
+void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
     if (ImGui::GetIO().WantCaptureMouse) return;
     AppState* g = static_cast<AppState*>(glfwGetWindowUserPointer(window));
     if (!g || !g->geom) return;
@@ -681,76 +814,111 @@ void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, in
     // Nếu bắt dính được điểm snap, dùng tọa độ điểm đó
     if (g->isHoveringAny) effectivePos = g->hoverPos;
 
+    // --- XỬ LÝ NHẤN CHUỘT TRÁI ---
     if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
         
-        // --- XỬ LÝ CLICK SELECTION ---
-        // Mỗi khi click, nếu đang hover hình nào thì Select hình đó
+        // 1. Cập nhật Selection (Chọn hình)
         g->selectedShapeIndex = g->hoveredShapeIndex;
         if (g->selectedShapeIndex != -1) {
             std::cout << "Selected Shape: " << g->selectedShapeIndex << std::endl;
         }
         
-        // --- LOGIC VẼ (Nếu đang ở chế độ Draw) ---
-        if (g->mode == MODE_POINT) {
-            switch (g->currentTool) {
-                case TOOL_POINT: {
-                    pushUndo(*g);
-                    Shape s; s.kind = SH_POINT; s.p1 = effectivePos; 
-                    s.pointSize = g->pointSize; s.color = g->paintColor;
-                    g->shapes.push_back(s);
-                } break;
-                case TOOL_LINE: {
-                    if (!g->awaitingSecond) {
-                        g->tempP1 = effectivePos; g->awaitingSecond = true;
-                    } else {
-                        pushUndo(*g);
-                        Shape s; s.kind = SH_LINE; s.p1 = g->tempP1; s.p2 = effectivePos; 
-                        s.color = g->paintColor; g->shapes.push_back(s);
-                        g->awaitingSecond = false;
-                    }
-                } break;
-                case TOOL_CIRCLE: {
-                    if (!g->awaitingSecond) {
-                        g->tempP1 = effectivePos; g->awaitingSecond = true;
-                    } else {
-                        pushUndo(*g);
-                        float dx = effectivePos.x - g->tempP1.x; float dy = effectivePos.y - g->tempP1.y;
-                        Shape s; s.kind = SH_CIRCLE; s.p1 = g->tempP1; 
-                        s.radius = std::sqrt(dx*dx + dy*dy); s.segments = g->circleSegments; s.color = g->paintColor;
-                        g->shapes.push_back(s);
-                        g->awaitingSecond = false;
-                    }
-                } break;
-                case TOOL_ELLIPSE: {
-                     if (!g->awaitingSecond) {
-                        g->tempP1 = effectivePos; g->awaitingSecond = true;
-                    } else {
-                        pushUndo(*g);
-                        float dx = effectivePos.x - g->tempP1.x; float dy = effectivePos.y - g->tempP1.y;
-                        Shape s; s.kind = SH_ELLIPSE; s.p1 = g->tempP1;
-                        s.a = std::sqrt(dx*dx + dy*dy); s.b = g->ellipse_b; s.angle = g->ellipse_angle;
-                        s.segments = g->ellipseSegments; s.color = g->paintColor;
-                        g->shapes.push_back(s);
-                        g->awaitingSecond = false;
-                    }
-                } break;
-                case TOOL_POLYLINE: {
-                    if (!g->polylineActive) { g->polylineActive = true; g->tempPoly.clear(); }
-                    g->tempPoly.push_back(effectivePos);
-                } break;
-                default: break;
+        // 2. Kiểm tra Logic Kéo Điểm (Dynamic Point)
+        bool startDragPoint = false;
+        if (g->hoveredShapeIndex != -1) {
+            Shape& s = g->shapes[g->hoveredShapeIndex];
+            // Nếu click trúng ĐIỂM và điểm đó KHÔNG FIXED -> Bắt đầu kéo
+            if (s.kind == SH_POINT && !s.isFixed) {
+                draggingPointIdx = g->hoveredShapeIndex;
+                startDragPoint = true;
+                pushUndo(*g); // Lưu trạng thái trước khi di chuyển
             }
-            return;
         }
         
-        // Panning start (Nếu đang ở Mode NAV và click ra ngoài hình)
-        dragging = true;
-        glfwGetCursorPos(window, &lastX, &lastY);
+        // 3. Nếu KHÔNG phải là kéo điểm thì mới xét tiếp chế độ vẽ
+        if (!startDragPoint) {
+            
+            // Trường hợp A: Đang ở chế độ VẼ (Draw Mode)
+            if (g->mode == MODE_POINT) {
+                switch (g->currentTool) {
+                    case TOOL_POINT_CURSOR: { 
+                        // FIX QUAN TRỌNG: 
+                        // Nếu click trúng hình cũ (Select) thì KHÔNG vẽ điểm mới đè lên
+                        if (g->hoveredShapeIndex != -1) break;
+
+                        pushUndo(*g);
+                        Shape s; s.kind = SH_POINT; s.p1 = effectivePos; 
+                        s.pointSize = g->pointSize; s.color = g->paintColor;
+                        
+                        // Thuộc tính mặc định
+                        s.name = getNextPointName(g->shapes);
+                        s.isFixed = true; 
+
+                        g->shapes.push_back(s);
+                    } break;
+
+                    case TOOL_LINE: {
+                        if (!g->awaitingSecond) {
+                            g->tempP1 = effectivePos; g->awaitingSecond = true;
+                        } else {
+                            pushUndo(*g);
+                            Shape s; s.kind = SH_LINE; s.p1 = g->tempP1; s.p2 = effectivePos; 
+                            s.color = g->paintColor; g->shapes.push_back(s);
+                            g->awaitingSecond = false;
+                        }
+                    } break;
+
+                    case TOOL_CIRCLE: {
+                        if (!g->awaitingSecond) {
+                            g->tempP1 = effectivePos; g->awaitingSecond = true;
+                        } else {
+                            pushUndo(*g);
+                            float dx = effectivePos.x - g->tempP1.x; float dy = effectivePos.y - g->tempP1.y;
+                            Shape s; s.kind = SH_CIRCLE; s.p1 = g->tempP1; 
+                            s.radius = std::sqrt(dx*dx + dy*dy); s.segments = g->circleSegments; s.color = g->paintColor;
+                            g->shapes.push_back(s);
+                            g->awaitingSecond = false;
+                        }
+                    } break;
+
+                    case TOOL_ELLIPSE: {
+                         if (!g->awaitingSecond) {
+                            g->tempP1 = effectivePos; g->awaitingSecond = true;
+                        } else {
+                            pushUndo(*g);
+                            float dx = effectivePos.x - g->tempP1.x; float dy = effectivePos.y - g->tempP1.y;
+                            Shape s; s.kind = SH_ELLIPSE; s.p1 = g->tempP1;
+                            s.a = std::sqrt(dx*dx + dy*dy); s.b = g->ellipse_b; s.angle = g->ellipse_angle;
+                            s.segments = g->ellipseSegments; s.color = g->paintColor;
+                            g->shapes.push_back(s);
+                            g->awaitingSecond = false;
+                        }
+                    } break;
+
+                    case TOOL_POLYLINE: {
+                        if (!g->polylineActive) { g->polylineActive = true; g->tempPoly.clear(); }
+                        g->tempPoly.push_back(effectivePos);
+                    } break;
+                    
+                    default: break; // Parabola, Hyperbola... (giữ nguyên nếu có)
+                }
+                return; // Đã xử lý vẽ xong, thoát luôn (không Pan)
+            }
+            
+            // Trường hợp B: Đang ở chế độ NAVIGATE hoặc click ra vùng trống -> Panning màn hình
+            dragging = true;
+            glfwGetCursorPos(window, &lastX, &lastY);
+        }
         return;
     }
 
-    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) dragging = false;
+    // --- XỬ LÝ NHẢ CHUỘT TRÁI (FIX QUAN TRỌNG) ---
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
+        dragging = false;        // Dừng Panning
+        draggingPointIdx = -1;   // <--- BẮT BUỘC PHẢI CÓ: Dừng kéo điểm dynamic
+    }
 
+    // --- XỬ LÝ CHUỘT PHẢI (Hủy thao tác) ---
     if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
         g->awaitingSecond = false;
         if (g->polylineActive) {

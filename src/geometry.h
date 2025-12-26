@@ -179,26 +179,35 @@ public:
     }
 
     void drawText(const std::string& text, float x, float y, const Color& color) {
-        // 1. An toàn: Nếu chưa load font, dùng font mặc định thay vì crash app
-        ImFont* fontToUse = font ? font : ImGui::GetFont(); 
-        
-        // 2. Chuyển đổi màu từ float (0.0-1.0) sang U32 (0-255) cho ImGui
+        if (text.empty()) return;
+
+        // An toàn: Nếu chưa set font, dùng font mặc định của ImGui
+        // Lưu ý: Không PushFont nếu pointer là nullptr hoặc rác
+        bool needPop = false;
+        if (font != nullptr) {
+            ImGui::PushFont(font);
+            needPop = true;
+        }
+
+        // Chuyển màu
         ImU32 col32 = IM_COL32((int)(color.r * 255), (int)(color.g * 255), (int)(color.b * 255), 255);
 
-        ImGui::PushFont(fontToUse);
+        // Vẽ viền đen cho chữ (Shadow) để dễ nhìn trên nền tối
+        ImGui::GetBackgroundDrawList()->AddText(ImVec2(x + 1, y + 1), IM_COL32(0,0,0,255), text.c_str());
         
-        // 3. Dùng GetForegroundDrawList để vẽ đè lên mọi thứ tại toạ độ màn hình (Screen Coordinates)
-        // Lưu ý: x, y ở đây phải là toạ độ PIXEL trên màn hình cửa sổ
-        ImGui::GetForegroundDrawList()->AddText(ImVec2(x, y), col32, text.c_str());
+        // Vẽ chữ chính
+        ImGui::GetBackgroundDrawList()->AddText(ImVec2(x, y), col32, text.c_str());
 
-        ImGui::PopFont();
+        if (needPop) {
+            ImGui::PopFont();
+        }
     }
 
 private:
     Shader &shader;
     float left, right, bottom, top;
     GLuint VAO, VBO;
-    ImFont* font;
+    ImFont* font = nullptr;
 
     inline float worldToNDCx(float x) const {
         return (2.0f * (x - left) / (right - left) - 1.0f);
