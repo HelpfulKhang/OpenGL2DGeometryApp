@@ -9,7 +9,7 @@
             "stopAtEntry": false,
             "externalConsole": true,
             "cwd": "c:/Users/Administrator/Downloads/test/src",
-            "program": "c:/Users/Administrator/Downloads/test/src/build/Debug/outDebug",
+            "program": "${workspaceFolder}/app.exe",
             "MIMode": "gdb",
             "miDebuggerPath": "gdb",
             "setupCommands": [
