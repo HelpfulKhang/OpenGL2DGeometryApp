@@ -75,6 +75,7 @@ struct Shape {
     int segments = 64;
     std::string name = "";  // Tên hiển thị (VD: "A", "B")
     bool isFixed = true;    // Mặc định là Cố định (không kéo được)
+    bool showName = true;   // Mặc định là hiện tên
 };
 
 std::string getNextPointName(const std::vector<Shape>& shapes) {
@@ -448,7 +449,7 @@ int main()
             drawShape(app.shapes[i], geom);
 
             // --- SỬA ĐOẠN VẼ TÊN ĐIỂM ---
-            if (app.shapes[i].kind == SH_POINT && !app.shapes[i].name.empty()) {
+            if (app.shapes[i].kind == SH_POINT && !app.shapes[i].name.empty() && app.shapes[i].showName) {
                 Vec2 p = app.shapes[i].p1;
                 
                 // Chuyển đổi World -> NDC (Normalized Device Coordinates)
@@ -568,6 +569,7 @@ int main()
                 // Nếu là ĐIỂM thì hiện ô nhập tên và checkbox Fixed
                 if (selShape.kind == SH_POINT) {
                     ImGui::InputText("Name", &selShape.name); // Cần include imgui_stdlib.h
+                    ImGui::Checkbox("Show Name", &selShape.showName);
                     
                     // Checkbox Fixed
                     // Logic: Nếu Fixed = false (Dynamic) thì có thể kéo chuột
@@ -579,6 +581,28 @@ int main()
                         ImGui::TextDisabled("(Dynamic)");
                     }
                 }
+
+                ImGui::Separator();
+                
+                // --- THÊM NÚT XÓA (DELETE BUTTON) ---
+                ImGui::PushStyleColor(ImGuiCol_Button, (ImVec4)ImColor::HSV(0.0f, 0.6f, 0.6f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0.0f, 0.7f, 0.7f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0.0f, 0.8f, 0.8f));
+                
+                if (ImGui::Button("Delete Shape", ImVec2(-1.0f, 0.0f))) { // -1.0f là full chiều rộng
+                    pushUndo(app); // Lưu trạng thái trước khi xóa
+                    
+                    // Xóa phần tử khỏi vector
+                    app.shapes.erase(app.shapes.begin() + app.selectedShapeIndex);
+                    
+                    // Reset các index vì vector đã thay đổi kích thước
+                    app.selectedShapeIndex = -1; 
+                    app.hoveredShapeIndex = -1;
+                    draggingPointIdx = -1; // Đề phòng đang kéo hình đó thì xóa
+                }
+                ImGui::PopStyleColor(3);
+                // ------------------------------------
+                
             }
             if (ImGui::Button("Deselect")) app.selectedShapeIndex = -1;
         } else {
@@ -679,6 +703,16 @@ void canvas_key_callback(GLFWwindow* window, int key, int scancode, int action, 
     if (!g) return;
     if (key == GLFW_KEY_Z && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL)) doUndo(*g);
     if (key == GLFW_KEY_Y && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL)) doRedo(*g);
+
+    if (key == GLFW_KEY_DELETE && action == GLFW_PRESS) {
+        if (g->selectedShapeIndex != -1 && g->selectedShapeIndex < (int)g->shapes.size()) {
+            pushUndo(*g);
+            g->shapes.erase(g->shapes.begin() + g->selectedShapeIndex);
+            g->selectedShapeIndex = -1;
+            g->hoveredShapeIndex = -1;
+            draggingPointIdx = -1;
+        }
+    }
     
     // Phím ESC để bỏ chọn
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
