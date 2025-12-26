@@ -64,7 +64,7 @@ public:
         uploadAndDraw(verts, GL_LINE_STRIP);
     }
 
-    void drawCircle(const Vec2 &center, float radius, const Color &c, int segments = 64) {
+    void drawCircle(const Vec2 &center, float radius, const Color &c, int segments = 500) {
         shader.use();
         std::vector<Vec2> pts;
         pts.reserve(segments);
@@ -76,7 +76,7 @@ public:
         uploadAndDraw(verts, GL_LINE_LOOP);
     }
 
-    void drawEllipse(const Vec2 &center, float a, float b, float angleRad, const Color &c, int segments = 128) {
+    void drawEllipse(const Vec2 &center, float a, float b, float angleRad, const Color &c, int segments = 500) {
         shader.use();
         std::vector<Vec2> pts; pts.reserve(segments);
         float cosA = cosf(angleRad), sinA = sinf(angleRad);
@@ -91,44 +91,65 @@ public:
         uploadAndDraw(verts, GL_LINE_LOOP);
     }
 
-    void drawParabola(float k, float xmin, float xmax, const Color &c, int samples = 200) {
+    void drawParabola(Vec2 vertex, float a, bool isVertical, float range, int segs, Color c) {
+        if (std::abs(a) < 1e-6f) return;
         shader.use();
-        std::vector<Vec2> pts; pts.reserve(samples);
-        for (int i = 0; i < samples; ++i) {
-            float t = float(i) / float(samples - 1);
-            float x = xmin + (xmax - xmin) * t;
-            float y = k * x * x;
-            pts.push_back({ x, y });
-        }
-        auto verts = buildVertexBuffer(pts, c);
-        uploadAndDraw(verts, GL_LINE_STRIP);
-    }
+        std::vector<Vec2> pts;
 
-    void drawHyperbola(float a, float b, float tmin, float tmax, const Color &c, int samples = 200) {
-        shader.use();
-        std::vector<Vec2> pts; pts.reserve(samples);
-        for (int i = 0; i < samples; ++i) {
-            float s = float(i) / float(samples - 1);
-            float t = tmin + (tmax - tmin) * s;
-            float x = a * std::cosh(t);
-            float y = b * std::sinh(t);
-            pts.push_back({ x, y });
-        }
-        uploadAndDraw(buildVertexBuffer(pts, c), GL_LINE_STRIP);
-        pts.clear();
-        for (int i = 0; i < samples; ++i) {
-            float s = float(i) / float(samples - 1);
-            float t = tmin + (tmax - tmin) * s;
-            float x = -a * std::cosh(t);
-            float y = b * std::sinh(t);
-            pts.push_back({ x, y });
+        for (int i = 0; i <= segs; ++i) {
+            // Biến chuẩn hóa từ -1 đến 1
+            float norm = (float)i / (float)segs * 2.0f - 1.0f;
+            
+            // Kỹ thuật lấy mẫu phi tuyến: t = sign(norm) * norm^2 * range
+            // Giúp các điểm tập trung cực nhiều ở gần Đỉnh (0,0)
+            float t = (norm < 0 ? -1.0f : 1.0f) * (norm * norm) * range;
+
+            float x, y;
+            if (isVertical) {
+                x = t;
+                y = (t * t) / (4.0f * a);
+            } else {
+                y = t;
+                x = (t * t) / (4.0f * a);
+            }
+            pts.push_back({ vertex.x + x, vertex.y + y });
         }
         uploadAndDraw(buildVertexBuffer(pts, c), GL_LINE_STRIP);
     }
 
-    // [Trong file src/geometry.h]
+    void drawHyperbola(Vec2 center, float a, float b, bool isVertical, float range, int segs, Color c) {
+        if (std::abs(a) < 1e-6f || std::abs(b) < 1e-6f) return;
+        shader.use();
 
-    // Sửa lại signature hàm để nhận thêm 2 biến bool: showGridLines, showAxisLines
+        // Tính toán t_max để Hyperbola bao phủ được tầm nhìn hiện tại
+        // Vì x = a * cosh(t), ta cần t sao cho a * cosh(t) > range
+        // Một giá trị an toàn cho t_max dựa trên logarit của range/a
+        float t_max = std::acosh(std::max(1.0f, (range * 2.0f) / a));
+        if (t_max > 7.0f) t_max = 7.0f; // Giới hạn t để tránh tràn số (cosh(7) ~ 500)
+
+        auto drawBranch = [&](float sign) {
+            std::vector<Vec2> pts;
+            for (int i = 0; i <= segs; ++i) {
+                float t = -t_max + (float)i * (2.0f * t_max / (float)segs);
+                float x, y;
+                if (isVertical) {
+                    // y^2/b^2 - x^2/a^2 = 1 => y = +/- b*cosh(t), x = a*sinh(t)
+                    x = a * sinhf(t);
+                    y = sign * b * coshf(t);
+                } else {
+                    // x^2/a^2 - y^2/b^2 = 1 => x = +/- a*cosh(t), y = b*sinh(t)
+                    x = sign * a * coshf(t);
+                    y = b * sinhf(t);
+                }
+                pts.push_back({ center.x + x, center.y + y });
+            }
+            uploadAndDraw(buildVertexBuffer(pts, c), GL_LINE_STRIP);
+        };
+
+        drawBranch(1.0f);  // Nhánh dương
+        drawBranch(-1.0f); // Nhánh âm
+    }
+
     void drawGrid(float spacing, const Color &colorGrid, const Color &colorAxis, bool showGridLines, bool showAxisLines) {
         shader.use();
 

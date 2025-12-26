@@ -41,6 +41,10 @@ float distSq(Vec2 p1, Vec2 p2) {
     return (p1.x - p2.x)*(p1.x - p2.x) + (p1.y - p2.y)*(p1.y - p2.y);
 }
 
+float dist(Vec2 p1, Vec2 p2) {
+    return std::sqrt(distSq(p1, p2));
+}
+
 // Khoảng cách từ điểm p đến đoạn thẳng ab
 float distToSegment(Vec2 p, Vec2 a, Vec2 b) {
     Vec2 ab = {b.x - a.x, b.y - a.y};
@@ -53,8 +57,51 @@ float distToSegment(Vec2 p, Vec2 a, Vec2 b) {
     return std::sqrt(distSq(p, projection));
 }
 
+// Tính đường tròn ngoại tiếp qua 3 điểm
+bool calculateCircumcircle(Vec2 p1, Vec2 p2, Vec2 p3, Vec2& center, float& radius) {
+    float x1 = p1.x, y1 = p1.y;
+    float x2 = p2.x, y2 = p2.y;
+    float x3 = p3.x, y3 = p3.y;
+
+    float D = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2));
+    if (std::abs(D) < 1e-6f) return false; // 3 điểm thẳng hàng
+
+    center.x = ((x1 * x1 + y1 * y1) * (y2 - y3) + (x2 * x2 + y2 * y2) * (y3 - y1) + (x3 * x3 + y3 * y3) * (y1 - y2)) / D;
+    center.y = ((x1 * x1 + y1 * y1) * (x3 - x2) + (x2 * x2 + y2 * y2) * (x1 - x3) + (x3 * x3 + y3 * y3) * (x2 - x1)) / D;
+    radius = std::sqrt((center.x - x1) * (center.x - x1) + (center.y - y1) * (center.y - y1));
+    return true;
+}
+
+// Tính trung điểm
+Vec2 getMidpoint(Vec2 a, Vec2 b) {
+    return { (a.x + b.x) / 2.0f, (a.y + b.y) / 2.0f };
+}
+
+// Đối xứng điểm qua điểm: P' = 2*I - P
+Vec2 reflectPointPoint(Vec2 p, Vec2 center) {
+    return { 2.0f * center.x - p.x, 2.0f * center.y - p.y };
+}
+
+// Đối xứng điểm qua đường thẳng
+Vec2 reflectPointLine(Vec2 p, Vec2 a, Vec2 b) {
+    Vec2 ab = { b.x - a.x, b.y - a.y };
+    Vec2 ap = { p.x - a.x, p.y - a.y };
+    float l2 = ab.x * ab.x + ab.y * ab.y;
+    if (l2 == 0.0f) return p;
+    float t = (ap.x * ab.x + ap.y * ab.y) / l2;
+    Vec2 projection = { a.x + t * ab.x, a.y + t * ab.y };
+    // P' = P + 2*(Projection - P) = 2*Projection - P
+    return { 2.0f * projection.x - p.x, 2.0f * projection.y - p.y };
+}
+
 // ---- Data Structures ----
 enum AppMode { MODE_NAV = 0, MODE_POINT = 1 };
+
+enum PointMode { 
+    PT_CURSOR, PT_INPUT, PT_MIDPOINT, PT_REFLECT_PT, PT_REFLECT_LINE 
+};
+
+enum CircleMode { CIR_CENTER_PT, CIR_CENTER_RAD, CIR_3PTS };
 
 enum ShapeKind {
     SH_POINT = 0, SH_LINE, SH_CIRCLE, SH_ELLIPSE, SH_PARABOLA, SH_HYPERBOLA, SH_POLYLINE
@@ -68,9 +115,10 @@ struct Shape {
     float radius = 0.0f;
     float a = 0.0f, b = 0.0f;
     float angle = 0.0f;
-    float parab_k = 0.0f;
+    float paramA = 0.0f;
+    bool isVertical = true;
     float parab_xmin = -1.0f, parab_xmax = 1.0f;
-    float hyper_a = 1.0f, hyper_b = 0.5f, hyper_tmin = 0.0f, hyper_tmax = 1.0f;
+    float hyper_a = 1.0f, hyper_b = 0.5f;
     std::vector<Vec2> poly;
     int segments = 64;
     std::string name = "";  // Tên hiển thị (VD: "A", "B")
@@ -124,7 +172,7 @@ float getDistToShape(const Shape& s, Vec2 p) {
         }
         case SH_ELLIPSE: {
             // Lấy mẫu xấp xỉ để tính khoảng cách
-            int checkSegments = 32; 
+            int checkSegments = 500; 
             float minDist = 1e9;
             Vec2 prev;
             for(int i=0; i<=checkSegments; ++i) {
@@ -140,10 +188,64 @@ float getDistToShape(const Shape& s, Vec2 p) {
             }
             return minDist;
         }
-        case SH_PARABOLA: 
-             // Xấp xỉ đơn giản: khoảng cách tới điểm đầu/cuối
-             return std::min(std::sqrt(distSq({s.parab_xmin, s.parab_k*s.parab_xmin*s.parab_xmin}, p)),
-                             std::sqrt(distSq({s.parab_xmax, s.parab_k*s.parab_xmax*s.parab_xmax}, p)));
+        case SH_PARABOLA: {
+            float minDist = 1e9f;
+            float range = 10.0f;  // Phạm vi kiểm tra (nên khớp với range lúc vẽ)
+            int checkSegs = 2000;   // Số lượng đoạn thẳng dùng để xấp xỉ khoảng cách
+            Vec2 prev;
+
+            for (int i = 0; i <= checkSegs; ++i) {
+                // Biến chạy t từ -range đến range
+                float t = -range + (float)i * (2.0f * range / (float)checkSegs);
+                float dx, dy;
+
+                if (s.isVertical) {
+                    // x^2 = 4ay => y = x^2 / 4a. Biến chạy là x (t)
+                    dx = t;
+                    dy = (t * t) / (4.0f * s.paramA);
+                } else {
+                    // y^2 = 4ax => x = y^2 / 4a. Biến chạy là y (t)
+                    dy = t;
+                    dx = (t * t) / (4.0f * s.paramA);
+                }
+
+                // Tọa độ điểm hiện tại trên đường cong (đã cộng offset Đỉnh p1)
+                Vec2 curr = { s.p1.x + dx, s.p1.y + dy };
+
+                if (i > 0) {
+                    // Tính khoảng cách từ chuột tới đoạn thẳng nối từ điểm trước tới điểm này
+                    minDist = std::min(minDist, distToSegment(p, prev, curr));
+                }
+                prev = curr;
+            }
+            return minDist;
+        } break;
+        case SH_HYPERBOLA: {
+            float minDist = 1e9f;
+            auto checkBranch = [&](float sign) {
+                Vec2 prev;
+                float t_range = 5.0f; // cosh(5) ~ 74, đủ bao phủ màn hình
+                int steps = 50;
+                for (int i = 0; i <= steps; ++i) {
+                    float t = -t_range + (float)i * (2.0f * t_range / (float)steps);
+                    float dx, dy;
+                    if (s.isVertical) {
+                        // Dùng hyper_a, hyper_b theo yêu cầu của bạn
+                        dx = s.hyper_a * sinhf(t);
+                        dy = sign * s.hyper_b * coshf(t);
+                    } else {
+                        dx = sign * s.hyper_a * coshf(t);
+                        dy = s.hyper_b * sinhf(t);
+                    }
+                    Vec2 curr = { s.p1.x + dx, s.p1.y + dy };
+                    if (i > 0) minDist = std::min(minDist, distToSegment(p, prev, curr));
+                    prev = curr;
+                }
+            };
+            checkBranch(1.0f);  // Nhánh 1
+            checkBranch(-1.0f); // Nhánh 2
+            return minDist;
+        } break;
         default: return 1e9;
     }
 }
@@ -154,18 +256,34 @@ static void drawShape(const Shape &s, GeometryRenderer &geom) {
         case SH_LINE: geom.drawLine(s.p1, s.p2, s.color); break;
         case SH_CIRCLE: geom.drawCircle(s.p1, s.radius, s.color, s.segments); break;
         case SH_ELLIPSE: geom.drawEllipse(s.p1, s.a, s.b, s.angle, s.color, s.segments); break;
-        case SH_PARABOLA: geom.drawParabola(s.parab_k, s.parab_xmin, s.parab_xmax, s.color, std::max(8, s.segments)); break;
-        case SH_HYPERBOLA: geom.drawHyperbola(s.hyper_a, s.hyper_b, s.hyper_tmin, s.hyper_tmax, s.color, std::max(8, s.segments)); break;
+        case SH_PARABOLA: {
+            float l, r, b, t;
+            geom.getView(l, r, b, t);
+            
+            // Tính toán tầm nhìn hiện tại của người dùng
+            float viewWidth = (r - l);
+            float viewHeight = (t - b);
+            
+            // Range tự động bằng 2 lần tầm nhìn để đảm bảo luôn tràn màn hình
+            float dynamicRange = std::max(viewWidth, viewHeight) * 2.0f;
+            
+            // Luôn dùng ít nhất 2000 điểm để cực mịn kể cả khi zoom xa
+            geom.drawParabola(s.p1, s.paramA, s.isVertical, dynamicRange, 2000, s.color);
+        } break;
+        case SH_HYPERBOLA: {
+            float l, r, b, t;
+            geom.getView(l, r, b, t);
+            float dynamicRange = std::max(r - l, t - b); // Lấy phạm vi nhìn thấy
+
+            geom.drawHyperbola(s.p1, s.hyper_a, s.hyper_b, s.isVertical, dynamicRange, 2000, s.color);
+        } break;
         case SH_POLYLINE: geom.drawPolyline(s.poly, s.color); break;
         default: break;
     }
 }
 
-// [Trong file src/main.cpp]
-
 enum Tool {
-    TOOL_POINT_CURSOR = 0, // Đổi tên từ TOOL_POINT
-    TOOL_POINT_INPUT,      // Thêm mới
+    TOOL_POINT = 0,
     TOOL_LINE, 
     TOOL_CIRCLE, 
     TOOL_ELLIPSE, 
@@ -178,7 +296,7 @@ struct AppState {
     GeometryRenderer* geom = nullptr;
     std::vector<Shape> shapes;
     AppMode mode = MODE_NAV;
-    Tool currentTool = TOOL_POINT_CURSOR;
+    Tool currentTool = TOOL_POINT;
 
     Color drawColor{0.0f, 0.4f, 1.0f};
     float pointSize = 6.0f;
@@ -198,17 +316,22 @@ struct AppState {
     int selectedShapeIndex = -1; // Hình đã click chọn (Selected)
 
     // Params
-    int circleSegments = 96;
-    int ellipseSegments = 128;
+    int circleSegments = 500;
+    int ellipseSegments = 500;
     float ellipse_a = 0.4f;
     float ellipse_b = 0.4f;
     float ellipse_angle = 0.0f;
     bool ellipseCenterSet = false;
-    float parab_k = 0.3f;
-    float parab_xmin = -1.5f; float parab_xmax = 1.5f;
-    int parab_segments = 300;
-    float hyper_a = 0.4f, hyper_b = 0.25f, hyper_tmin = 0.2f, hyper_tmax = 1.6f;
-    int hyper_segments = 200;
+    int parab_segments = 500;
+    float ui_parabola_a = 1.0f;
+    bool ui_parabola_vertical = true;
+    bool parabolaVertexSet = false; // Đánh dấu đã chọn đỉnh
+    float hyper_a = 0.4f, hyper_b = 0.25f;
+    int hyper_segments = 500;
+    float ui_hyper_a = 1.0f;
+    float ui_hyper_b = 1.0f;
+    bool ui_hyper_vertical = false;
+    bool hyperbolaCenterSet = false;
 
     std::vector<std::vector<Shape>> undoStack;
     std::vector<std::vector<Shape>> redoStack;
@@ -219,6 +342,16 @@ struct AppState {
 
     float inputX = 0.0f; // Biến lưu giá trị nhập X
     float inputY = 0.0f; // Biến lưu giá trị nhập Y
+
+    PointMode pointMode = PT_CURSOR;
+    int pointStep = 0;          // Bước thực hiện (chọn điểm 1, điểm 2...)
+    int savedIdx1 = -1;         // Lưu index hình thứ nhất được chọn
+    int savedIdx2 = -1;         // Lưu index hình thứ hai được chọn
+
+    CircleMode circleMode = CIR_CENTER_PT;
+    int circlePointStep = 0;      // Đếm số điểm đã click
+    Vec2 circlePoints[3];         // Lưu tạm 3 tọa độ click
+    float ui_circle_radius = 1.0f; // Bán kính nhập từ UI
 };
 
 // Undo/Redo Helpers
@@ -313,8 +446,7 @@ bool getClosestSnapPoint(AppState* app, GLFWwindow* window, double mx, double my
             case SH_ELLIPSE: checkPoint(s.p1); break;
             case SH_POLYLINE: for (const auto& v : s.poly) checkPoint(v); break;
             case SH_PARABOLA: 
-                checkPoint({s.parab_xmin, s.parab_k * s.parab_xmin * s.parab_xmin});
-                checkPoint({s.parab_xmax, s.parab_k * s.parab_xmax * s.parab_xmax});
+                checkPoint(s.p1);
                 break;
             default: break;
         }
@@ -333,39 +465,96 @@ bool saveDrawing(const AppState& app, const char* path) {
     if (!app.geom) return false;
     std::ofstream ofs(resolveSavePath(path).string());
     if (!ofs) return false;
-    float l,r,b,t; app.geom->getView(l,r,b,t);
-    ofs << l << ' ' << r << ' ' << b << ' ' << t << '\n';
-    ofs << app.shapes.size() << '\n';
+
+    // Lưu vùng nhìn (View)
+    float l, r, b, t; app.geom->getView(l, r, b, t);
+    ofs << l << " " << r << " " << b << " " << t << "\n";
+
+    // Số lượng hình
+    ofs << app.shapes.size() << "\n";
+
     for (const Shape &s : app.shapes) {
-        ofs << (int)s.kind << ' ' << s.color.r << ' ' << s.color.g << ' ' << s.color.b << ' ';
-        if (s.kind == SH_POINT) ofs << s.p1.x << ' ' << s.p1.y << ' ' << s.pointSize;
-        else if (s.kind == SH_LINE) ofs << s.p1.x << ' ' << s.p1.y << ' ' << s.p2.x << ' ' << s.p2.y;
-        else if (s.kind == SH_CIRCLE) ofs << s.p1.x << ' ' << s.p1.y << ' ' << s.radius << ' ' << s.segments;
-        else if (s.kind == SH_POLYLINE) {
-            ofs << s.poly.size();
-            for (auto& p : s.poly) ofs << ' ' << p.x << ' ' << p.y;
+        // [Kind] [R G B]
+        ofs << (int)s.kind << " " << s.color.r << " " << s.color.g << " " << s.color.b << " ";
+
+        switch (s.kind) {
+            case SH_POINT:
+                // Tọa độ, Size, isFixed, showName, Name (Thay khoảng trắng bằng gạch dưới để tránh lỗi đọc file)
+                {
+                    std::string safeName = s.name;
+                    std::replace(safeName.begin(), safeName.end(), ' ', '_');
+                    if (safeName.empty()) safeName = "null";
+                    ofs << s.p1.x << " " << s.p1.y << " " << s.pointSize << " " 
+                        << s.isFixed << " " << s.showName << " " << safeName;
+                }
+                break;
+            case SH_LINE:
+                ofs << s.p1.x << " " << s.p1.y << " " << s.p2.x << " " << s.p2.y;
+                break;
+            case SH_CIRCLE:
+                ofs << s.p1.x << " " << s.p1.y << " " << s.radius << " " << s.segments;
+                break;
+            case SH_ELLIPSE:
+                ofs << s.p1.x << " " << s.p1.y << " " << s.a << " " << s.b << " " << s.angle << " " << s.segments;
+                break;
+            case SH_PARABOLA:
+                ofs << s.p1.x << " " << s.p1.y << " " << s.paramA << " " << s.isVertical;
+                break;
+            case SH_HYPERBOLA:
+                ofs << s.p1.x << " " << s.p1.y << " " << s.hyper_a << " " << s.hyper_b << " " << s.isVertical;
+                break;
+            case SH_POLYLINE:
+                ofs << s.poly.size();
+                for (auto& p : s.poly) ofs << " " << p.x << " " << p.y;
+                break;
         }
-        ofs << '\n';
+        ofs << "\n";
     }
     return true;
 }
+
 bool loadDrawing(AppState& app, const char* path) {
     std::ifstream ifs(resolveSavePath(path).string());
     if (!ifs) return false;
-    float l,r,b,t; ifs >> l >> r >> b >> t;
-    if (app.geom) app.geom->setView(l,r,b,t);
-    size_t count; ifs >> count;
+
+    float l, r, b, t; 
+    if (!(ifs >> l >> r >> b >> t)) return false;
+    if (app.geom) app.geom->setView(l, r, b, t);
+
+    size_t count; 
+    if (!(ifs >> count)) return false;
+
     app.shapes.clear();
-    for (size_t i=0; i<count; ++i) {
-        int k; float r,g,b;
-        ifs >> k >> r >> g >> b;
-        Shape s; s.kind = (ShapeKind)k; s.color = {r,g,b};
-        if (s.kind == SH_POINT) ifs >> s.p1.x >> s.p1.y >> s.pointSize;
-        else if (s.kind == SH_LINE) ifs >> s.p1.x >> s.p1.y >> s.p2.x >> s.p2.y;
-        else if (s.kind == SH_CIRCLE) ifs >> s.p1.x >> s.p1.y >> s.radius >> s.segments;
-        else if (s.kind == SH_POLYLINE) {
-            size_t n; ifs >> n; s.poly.resize(n);
-            for(size_t j=0; j<n; ++j) ifs >> s.poly[j].x >> s.poly[j].y;
+    for (size_t i = 0; i < count; ++i) {
+        int k; float cr, cg, cb;
+        ifs >> k >> cr >> cg >> cb;
+        Shape s; s.kind = (ShapeKind)k; s.color = {cr, cg, cb};
+
+        switch (s.kind) {
+            case SH_POINT:
+                ifs >> s.p1.x >> s.p1.y >> s.pointSize >> s.isFixed >> s.showName >> s.name;
+                if (s.name == "null") s.name = "";
+                std::replace(s.name.begin(), s.name.end(), '_', ' ');
+                break;
+            case SH_LINE:
+                ifs >> s.p1.x >> s.p1.y >> s.p2.x >> s.p2.y;
+                break;
+            case SH_CIRCLE:
+                ifs >> s.p1.x >> s.p1.y >> s.radius >> s.segments;
+                break;
+            case SH_ELLIPSE:
+                ifs >> s.p1.x >> s.p1.y >> s.a >> s.b >> s.angle >> s.segments;
+                break;
+            case SH_PARABOLA:
+                ifs >> s.p1.x >> s.p1.y >> s.paramA >> s.isVertical;
+                break;
+            case SH_HYPERBOLA:
+                ifs >> s.p1.x >> s.p1.y >> s.hyper_a >> s.hyper_b >> s.isVertical;
+                break;
+            case SH_POLYLINE:
+                size_t n; ifs >> n; s.poly.resize(n);
+                for (size_t j = 0; j < n; ++j) ifs >> s.poly[j].x >> s.poly[j].y;
+                break;
         }
         app.shapes.push_back(s);
     }
@@ -564,9 +753,66 @@ int main()
         
         // Hiển thị thông tin Selection
         if (app.selectedShapeIndex != -1) {
-            ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "Selected Shape #%d", app.selectedShapeIndex);
             if (app.selectedShapeIndex < (int)app.shapes.size()) {
                 Shape& selShape = app.shapes[app.selectedShapeIndex];
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Object Details:");
+
+                switch (selShape.kind) {
+                    case SH_POINT:
+                        ImGui::Text("Type: Point");
+                        ImGui::BulletText("Position: (%.2f, %.2f)", selShape.p1.x, selShape.p1.y);
+                        break;
+
+                    case SH_LINE:
+                        ImGui::Text("Type: Line");
+                        ImGui::BulletText("P1: (%.2f, %.2f)", selShape.p1.x, selShape.p1.y);
+                        ImGui::BulletText("P2: (%.2f, %.2f)", selShape.p2.x, selShape.p2.y);
+                        {
+                            float dx = selShape.p2.x - selShape.p1.x;
+                            float dy = selShape.p2.y - selShape.p1.y;
+                            if (std::abs(dx) < 1e-6f) ImGui::BulletText("Slope: Vertical (Infinite)");
+                            else ImGui::BulletText("Slope: %.4f", dy / dx);
+                        }
+                        break;
+
+                    case SH_CIRCLE:
+                        ImGui::Text("Type: Circle");
+                        ImGui::BulletText("Center: (%.2f, %.2f)", selShape.p1.x, selShape.p1.y);
+                        ImGui::BulletText("Radius: %.2f", selShape.radius);
+                        break;
+
+                    case SH_ELLIPSE:
+                        ImGui::Text("Type: Ellipse");
+                        ImGui::BulletText("Center: (%.2f, %.2f)", selShape.p1.x, selShape.p1.y);
+                        ImGui::BulletText("Semi-axis a: %.2f", selShape.a);
+                        ImGui::BulletText("Semi-axis b: %.2f", selShape.b);
+                        break;
+
+                    case SH_PARABOLA:
+                        ImGui::Text("Type: Parabola");
+                        ImGui::BulletText("Vertex: (%.2f, %.2f)", selShape.p1.x, selShape.p1.y);
+                        ImGui::BulletText("Param a: %.2f", selShape.paramA);
+                        ImGui::BulletText("Orientation: %s", selShape.isVertical ? "Vertical (x^2=4ay)" : "Horizontal (y^2=4ax)");
+                        break;
+
+                    case SH_HYPERBOLA:
+                        ImGui::Text("Type: Hyperbola");
+                        ImGui::BulletText("Center: (%.2f, %.2f)", selShape.p1.x, selShape.p1.y);
+                        ImGui::BulletText("a: %.2f", selShape.hyper_a);
+                        ImGui::BulletText("b: %.2f", selShape.hyper_b);
+                        ImGui::BulletText("Orientation: %s", selShape.isVertical ? "Vertical" : "Horizontal");
+                        break;
+
+                    case SH_POLYLINE:
+                        ImGui::Text("Type: Polyline");
+                        ImGui::BulletText("Vertices: %d", (int)selShape.poly.size());
+                        break;
+                        
+                    default:
+                        break;
+                }
                 
                 // Nếu là ĐIỂM thì hiện ô nhập tên và checkbox Fixed
                 if (selShape.kind == SH_POINT) {
@@ -614,9 +860,7 @@ int main()
 
         if (app.mode == MODE_POINT) {
             const char* toolNames[] = { 
-                "Point (Cursor)", // Tên mới
-                "Point (Input)",  // Tên mới
-                "Line", "Circle", "Ellipse", "Parabola", "Hyperbola", "Polyline" 
+                "Point", "Line", "Circle", "Ellipse", "Parabola", "Hyperbola", "Polyline" 
             };
             
             int curTool = (int)app.currentTool;
@@ -626,25 +870,74 @@ int main()
                 app.polylineActive = false; app.tempPoly.clear();
             }
 
-            // 2. Hiện giao diện nhập liệu CHỈ KHI chọn Tool "Point (Input)"
-            if (app.currentTool == TOOL_POINT_INPUT) {
-                ImGui::Text("Coordinates:");
-                ImGui::InputFloat("X", &app.inputX, 0.5f, 1.0f, "%.2f");
-                ImGui::InputFloat("Y", &app.inputY, 0.5f, 1.0f, "%.2f");
-                if (ImGui::Button("Add Point")) {
-                    pushUndo(app);
-                    Shape s;
-                    s.kind = SH_POINT;
-                    s.p1 = { app.inputX, app.inputY };
-                    s.pointSize = app.pointSize;
-                    s.color = app.paintColor;
-                    app.shapes.push_back(s);
-                    s.name = getNextPointName(app.shapes);
-                    s.isFixed = true;
+            if (app.currentTool == TOOL_POINT) {
+                const char* pModes[] = { "Cursor", "Input", "Midpoint", "Reflect (Point)", "Reflect (Line)" };
+                int currentPMode = (int)app.pointMode;
+                if (ImGui::Combo("Point Mode", &currentPMode, pModes, 5)) {
+                    app.pointMode = (PointMode)currentPMode;
+                    app.pointStep = 0; // Reset bước khi đổi mode
+                }
+
+                ImGui::Separator();
+
+                if (app.pointMode == PT_CURSOR) {
+                    ImGui::SliderFloat("Size", &app.pointSize, 1.0f, 20.0f);
+                } 
+                else if (app.pointMode == PT_INPUT) {
+                    ImGui::InputFloat("X", &app.inputX, 0.5f, 1.0f, "%.2f");
+                    ImGui::InputFloat("Y", &app.inputY, 0.5f, 1.0f, "%.2f");
+                    if (ImGui::Button("Add Point", ImVec2(-1, 0))) {
+                        pushUndo(app);
+                        Shape s; s.kind = SH_POINT; s.p1 = { app.inputX, app.inputY };
+                        s.pointSize = app.pointSize; s.color = app.paintColor;
+                        s.name = getNextPointName(app.shapes);
+                        app.shapes.push_back(s);
+                    }
+                }
+                else {
+                    // Hướng dẫn cho các chế độ dựng hình
+                    if (app.pointMode == PT_MIDPOINT) 
+                        ImGui::Text("Step: %s", app.pointStep == 0 ? "Select 1st Point" : "Select 2nd Point");
+                    else if (app.pointMode == PT_REFLECT_PT)
+                        ImGui::Text("Step: %s", app.pointStep == 0 ? "Select Point to reflect" : "Select Center Point");
+                    else if (app.pointMode == PT_REFLECT_LINE)
+                        ImGui::Text("Step: %s", app.pointStep == 0 ? "Select Point" : "Select Mirror Line");
+
+                    if (app.pointStep > 0 && ImGui::Button("Cancel Selection")) app.pointStep = 0;
                 }
             }
-            if (app.currentTool == TOOL_POINT_CURSOR) ImGui::SliderFloat("Size", &app.pointSize, 1.0f, 20.0f);
-            if (app.currentTool == TOOL_CIRCLE) ImGui::SliderInt("Segs", &app.circleSegments, 16, 128);
+            if (app.currentTool == TOOL_CIRCLE) {
+                const char* cModes[] = { "Circle (center, point)", "Circle (center, radius)", "Circle (3 points)" };
+                int currentMode = (int)app.circleMode;
+                if (ImGui::Combo("Mode", &currentMode, cModes, 3)) {
+                    app.circleMode = (CircleMode)currentMode;
+                    app.circlePointStep = 0; // Reset khi đổi mode
+                }
+
+                ImGui::Separator();
+
+                if (app.circleMode == CIR_CENTER_RAD) {
+                    ImGui::InputFloat("Radius", &app.ui_circle_radius, 0.1f, 1.0f, "%.2f");
+                    if (app.circlePointStep >= 1) {
+                        if (ImGui::Button("Draw Circle", ImVec2(-1, 0))) {
+                            pushUndo(app);
+                            Shape s; s.kind = SH_CIRCLE; s.p1 = app.circlePoints[0];
+                            s.radius = app.ui_circle_radius; s.color = app.paintColor; s.segments = 200;
+                            app.shapes.push_back(s);
+                            app.circlePointStep = 0;
+                        }
+                    }
+                } 
+                else if (app.circleMode == CIR_3PTS) {
+                    ImGui::Text("Collected points: %d/3", app.circlePointStep);
+                    if (app.circlePointStep > 0) {
+                        if (ImGui::Button("Cancel selection")) app.circlePointStep = 0;
+                    }
+                }
+                else { // CIR_CENTER_PT
+                    ImGui::Text("Step: %s", app.circlePointStep == 0 ? "Click Center" : "Click point on boundary");
+                }
+            }
             if (app.currentTool == TOOL_ELLIPSE) {
                 ImGui::Separator();
                 ImGui::Text("Select a center point");
@@ -655,7 +948,7 @@ int main()
                     ImGui::InputFloat("ry", &app.ellipse_b, 0.1f, 0.5f, "%.2f");
                     
                     // Nút Vẽ
-                    if (ImGui::Button("Draw", ImVec2(-1.0f, 0.0f))) {
+                    if (ImGui::Button("Draw Ellipse", ImVec2(-1.0f, 0.0f))) {
                         pushUndo(app);
                         Shape s;
                         s.kind = SH_ELLIPSE;
@@ -668,6 +961,55 @@ int main()
                         
                         app.shapes.push_back(s);
                         app.ellipseCenterSet = false; // Reset sau khi vẽ xong
+                    }
+                }
+            }
+            if (app.currentTool == TOOL_PARABOLA) {
+                ImGui::Separator();
+                ImGui::Text("Select a center point");
+
+                if (app.parabolaVertexSet) {
+                    // Nhập hệ số a
+                    ImGui::InputFloat("a", &app.ui_parabola_a, 0.1f, 0.5f, "%.2f");
+                    
+                    // Chọn hướng
+                    ImGui::Checkbox("Vertical?", &app.ui_parabola_vertical);
+
+                    if (ImGui::Button("Draw Parabola", ImVec2(-1.0f, 0.0f))) {
+                        pushUndo(app);
+                        Shape s;
+                        s.kind = SH_PARABOLA;
+                        s.p1 = app.tempP1; // Đỉnh
+                        s.paramA = app.ui_parabola_a;
+                        s.isVertical = (bool)app.ui_parabola_vertical;
+                        s.color = app.paintColor;
+                        
+                        app.shapes.push_back(s);
+                        app.parabolaVertexSet = false; // Reset
+                    }
+                }
+            }
+            if (app.currentTool == TOOL_HYPERBOLA) {
+                ImGui::Separator();
+                ImGui::Text("Select a center point");
+
+                if (app.hyperbolaCenterSet) {
+                    ImGui::InputFloat("a", &app.ui_hyper_a, 0.1f, 0.5f, "%.2f");
+                    ImGui::InputFloat("b", &app.ui_hyper_b, 0.1f, 0.5f, "%.2f");
+                    ImGui::Checkbox("Vertical?", &app.ui_hyper_vertical);
+
+                    if (ImGui::Button("Draw Hyperbola", ImVec2(-1.0f, 0.0f))) {
+                        pushUndo(app);
+                        Shape s;
+                        s.kind = SH_HYPERBOLA;
+                        s.p1 = app.tempP1;
+                        s.hyper_a = app.ui_hyper_a;
+                        s.hyper_b = app.ui_hyper_b;
+                        s.isVertical = app.ui_hyper_vertical;
+                        s.color = app.paintColor;
+                        
+                        app.shapes.push_back(s);
+                        app.hyperbolaCenterSet = false; // Reset
                     }
                 }
             }
@@ -863,7 +1205,6 @@ void canvas_cursor_position_callback(GLFWwindow* window, double xpos, double ypo
     lastY = ypos;
 }
 
-// [Thay thế toàn bộ hàm canvas_mouse_button_callback cũ bằng hàm này]
 void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
     if (ImGui::GetIO().WantCaptureMouse) return;
     AppState* g = static_cast<AppState*>(glfwGetWindowUserPointer(window));
@@ -903,20 +1244,66 @@ void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, in
             // Trường hợp A: Đang ở chế độ VẼ (Draw Mode)
             if (g->mode == MODE_POINT) {
                 switch (g->currentTool) {
-                    case TOOL_POINT_CURSOR: { 
-                        // FIX QUAN TRỌNG: 
-                        // Nếu click trúng hình cũ (Select) thì KHÔNG vẽ điểm mới đè lên
-                        if (g->hoveredShapeIndex != -1) break;
-
-                        pushUndo(*g);
-                        Shape s; s.kind = SH_POINT; s.p1 = effectivePos; 
-                        s.pointSize = g->pointSize; s.color = g->paintColor;
-                        
-                        // Thuộc tính mặc định
-                        s.name = getNextPointName(g->shapes);
-                        s.isFixed = true; 
-
-                        g->shapes.push_back(s);
+                    case TOOL_POINT: {
+                        if (g->pointMode == PT_CURSOR) {
+                            if (g->hoveredShapeIndex != -1) break; // Tránh vẽ đè
+                            pushUndo(*g);
+                            Shape s; s.kind = SH_POINT; s.p1 = effectivePos;
+                            s.pointSize = g->pointSize; s.color = g->paintColor;
+                            s.name = getNextPointName(g->shapes);
+                            g->shapes.push_back(s);
+                        } 
+                        else if (g->pointMode == PT_MIDPOINT) {
+                            // Chỉ chấp nhận nếu hover trúng một POINT
+                            if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT) {
+                                if (g->pointStep == 0) {
+                                    g->savedIdx1 = g->hoveredShapeIndex;
+                                    g->pointStep = 1;
+                                } else {
+                                    pushUndo(*g);
+                                    Vec2 mid = getMidpoint(g->shapes[g->savedIdx1].p1, g->shapes[g->hoveredShapeIndex].p1);
+                                    Shape s; s.kind = SH_POINT; s.p1 = mid; s.color = g->paintColor;
+                                    s.name = "Mid_" + g->shapes[g->savedIdx1].name + g->shapes[g->hoveredShapeIndex].name;
+                                    g->shapes.push_back(s);
+                                    g->pointStep = 0;
+                                }
+                            }
+                        }
+                        else if (g->pointMode == PT_REFLECT_PT) {
+                            if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT) {
+                                if (g->pointStep == 0) {
+                                    g->savedIdx1 = g->hoveredShapeIndex;
+                                    g->pointStep = 1;
+                                } else {
+                                    pushUndo(*g);
+                                    Vec2 ref = reflectPointPoint(g->shapes[g->savedIdx1].p1, g->shapes[g->hoveredShapeIndex].p1);
+                                    Shape s; s.kind = SH_POINT; s.p1 = ref; s.color = g->paintColor;
+                                    s.name = g->shapes[g->savedIdx1].name + "'";
+                                    g->shapes.push_back(s);
+                                    g->pointStep = 0;
+                                }
+                            }
+                        }
+                        else if (g->pointMode == PT_REFLECT_LINE) {
+                            if (g->pointStep == 0) {
+                                // Bước 1: Chọn điểm
+                                if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT) {
+                                    g->savedIdx1 = g->hoveredShapeIndex;
+                                    g->pointStep = 1;
+                                }
+                            } else {
+                                // Bước 2: Chọn đường thẳng
+                                if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_LINE) {
+                                    pushUndo(*g);
+                                    Shape& line = g->shapes[g->hoveredShapeIndex];
+                                    Vec2 ref = reflectPointLine(g->shapes[g->savedIdx1].p1, line.p1, line.p2);
+                                    Shape s; s.kind = SH_POINT; s.p1 = ref; s.color = g->paintColor;
+                                    s.name = g->shapes[g->savedIdx1].name + "_l";
+                                    g->shapes.push_back(s);
+                                    g->pointStep = 0;
+                                }
+                            }
+                        }
                     } break;
 
                     case TOOL_LINE: {
@@ -931,15 +1318,36 @@ void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, in
                     } break;
 
                     case TOOL_CIRCLE: {
-                        if (!g->awaitingSecond) {
-                            g->tempP1 = effectivePos; g->awaitingSecond = true;
-                        } else {
-                            pushUndo(*g);
-                            float dx = effectivePos.x - g->tempP1.x; float dy = effectivePos.y - g->tempP1.y;
-                            Shape s; s.kind = SH_CIRCLE; s.p1 = g->tempP1; 
-                            s.radius = std::sqrt(dx*dx + dy*dy); s.segments = g->circleSegments; s.color = g->paintColor;
-                            g->shapes.push_back(s);
-                            g->awaitingSecond = false;
+                        // Lưu điểm vừa click vào mảng tạm
+                        g->circlePoints[g->circlePointStep] = effectivePos;
+                        g->circlePointStep++;
+
+                        if (g->circleMode == CIR_CENTER_PT) {
+                            if (g->circlePointStep == 2) {
+                                pushUndo(*g);
+                                Shape s; s.kind = SH_CIRCLE;
+                                s.p1 = g->circlePoints[0]; // Tâm
+                                s.radius = dist(g->circlePoints[0], g->circlePoints[1]); // Tính R
+                                s.color = g->paintColor; s.segments = 200;
+                                g->shapes.push_back(s);
+                                g->circlePointStep = 0; // Reset
+                            }
+                        } 
+                        else if (g->circleMode == CIR_CENTER_RAD) {
+                            // Chỉ cần lấy tâm, việc vẽ sẽ kích hoạt qua nút "Draw" trên UI
+                            // (Hoặc bạn có thể vẽ luôn nếu muốn)
+                        } 
+                        else if (g->circleMode == CIR_3PTS) {
+                            if (g->circlePointStep == 3) {
+                                Vec2 center; float rad;
+                                if (calculateCircumcircle(g->circlePoints[0], g->circlePoints[1], g->circlePoints[2], center, rad)) {
+                                    pushUndo(*g);
+                                    Shape s; s.kind = SH_CIRCLE; s.p1 = center; s.radius = rad;
+                                    s.color = g->paintColor; s.segments = 200;
+                                    g->shapes.push_back(s);
+                                }
+                                g->circlePointStep = 0; // Reset
+                            }
                         }
                     } break;
 
@@ -952,10 +1360,21 @@ void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, in
                         if (!g->polylineActive) { g->polylineActive = true; g->tempPoly.clear(); }
                         g->tempPoly.push_back(effectivePos);
                     } break;
+
+                    case TOOL_PARABOLA: {
+                        g->tempP1 = effectivePos; // Lưu vị trí click làm Đỉnh
+                        g->parabolaVertexSet = true;
+                        // Chờ nhấn nút "Draw" trên UI
+                    } break;
+
+                    case TOOL_HYPERBOLA: {
+                        g->tempP1 = effectivePos; // Lưu vị trí click làm Tâm (Center)
+                        g->hyperbolaCenterSet = true;
+                    } break;
                     
-                    default: break; // Parabola, Hyperbola... (giữ nguyên nếu có)
+                    default: break;
                 }
-                return; // Đã xử lý vẽ xong, thoát luôn (không Pan)
+                return;
             }
             
             // Trường hợp B: Đang ở chế độ NAVIGATE hoặc click ra vùng trống -> Panning màn hình
