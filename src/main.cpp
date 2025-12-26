@@ -47,25 +47,51 @@ float dist(Vec2 p1, Vec2 p2)
     return std::sqrt(distSq(p1, p2));
 }
 
+// Tính giao điểm của 2 đường thẳng vô hạn (trả về false nếu song song)
+bool getLineIntersection(Vec2 a1, Vec2 b1, Vec2 a2, Vec2 b2, Vec2 &outI)
+{
+    float x1 = a1.x, y1 = a1.y, x2 = b1.x, y2 = b1.y;
+    float x3 = a2.x, y3 = a2.y, x4 = b2.x, y4 = b2.y;
+    float denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if (std::abs(denom) < 1e-6f)
+        return false;
+    outI.x = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denom;
+    outI.y = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denom;
+    return true;
+}
+
+// Lấy vector đơn vị (Normalize)
+Vec2 normalizeVec(Vec2 v)
+{
+    float len = std::sqrt(v.x * v.x + v.y * v.y);
+    if (len < 1e-6f)
+        return {0, 0};
+    return {v.x / len, v.y / len};
+}
+
 // Tính góc giữa 2 đường thẳng (0 đến 180 độ)
-float getAngleBetweenLines(Vec2 a1, Vec2 b1, Vec2 a2, Vec2 b2) {
-    Vec2 v1 = { b1.x - a1.x, b1.y - a1.y };
-    Vec2 v2 = { b2.x - a2.x, b2.y - a2.y };
+float getAngleBetweenLines(Vec2 a1, Vec2 b1, Vec2 a2, Vec2 b2)
+{
+    Vec2 v1 = {b1.x - a1.x, b1.y - a1.y};
+    Vec2 v2 = {b2.x - a2.x, b2.y - a2.y};
     float dot = v1.x * v2.x + v1.y * v2.y;
     float mag1 = std::sqrt(v1.x * v1.x + v1.y * v1.y);
     float mag2 = std::sqrt(v2.x * v2.x + v2.y * v2.y);
-    
-    if (mag1 < 1e-6f || mag2 < 1e-6f) return 0.0f;
-    
-    // cos(theta) = |v1.v2| / (|v1|.|v2|) -> Lấy trị tuyệt đối để luôn có góc nhọn/vuông (0-90) 
+
+    if (mag1 < 1e-6f || mag2 < 1e-6f)
+        return 0.0f;
+
+    // cos(theta) = |v1.v2| / (|v1|.|v2|) -> Lấy trị tuyệt đối để luôn có góc nhọn/vuông (0-90)
     // Nhưng đề bài yêu cầu 0-180, thường trong hình học phẳng ta lấy góc không tù:
     float cosTheta = std::abs(dot) / (mag1 * mag2);
-    if (cosTheta > 1.0f) cosTheta = 1.0f;
+    if (cosTheta > 1.0f)
+        cosTheta = 1.0f;
     return std::acos(cosTheta) * 180.0f / 3.14159265f;
 }
 
 // Quay điểm quanh tâm
-Vec2 rotatePoint(Vec2 p, Vec2 center, float angleDeg) {
+Vec2 rotatePoint(Vec2 p, Vec2 center, float angleDeg)
+{
     float rad = angleDeg * 3.14159265f / 180.0f;
     float s = std::sin(rad);
     float c = std::cos(rad);
@@ -73,7 +99,7 @@ Vec2 rotatePoint(Vec2 p, Vec2 center, float angleDeg) {
     float x = p.x - center.x;
     float y = p.y - center.y;
     // Áp dụng ma trận quay và tịnh tiến ngược lại
-    return { x * c - y * s + center.x, x * s + y * c + center.y };
+    return {x * c - y * s + center.x, x * s + y * c + center.y};
 }
 
 // Khoảng cách từ điểm p đến đoạn thẳng ab
@@ -150,11 +176,16 @@ enum PointMode
     PT_ROTATE
 };
 
-enum LineMode {
+enum LineMode
+{
     LN_SEGMENT,
-    LN_INFINITE,  
+    LN_INFINITE,
     LN_RAY,
-    LN_ANGLE 
+    LN_ANGLE,
+    LN_PERP,          // Đường vuông góc (Đường cao)
+    LN_PERP_BISECTOR, // Trung trực
+    LN_PARALLEL,      // Song song
+    LN_BISECTOR       // Phân giác
 };
 
 enum CircleMode
@@ -167,7 +198,7 @@ enum CircleMode
 enum ShapeKind
 {
     SH_POINT = 0,
-    SH_LINE,        // Giữ nguyên làm Đoạn thẳng
+    SH_LINE,          // Giữ nguyên làm Đoạn thẳng
     SH_INFINITE_LINE, // Mới
     SH_RAY,           // Mới
     SH_CIRCLE,
@@ -348,31 +379,35 @@ float getDistToShape(const Shape &s, Vec2 p)
     }
     break;
 
-    case SH_INFINITE_LINE: {
+    case SH_INFINITE_LINE:
+    {
         // Khoảng cách từ điểm p đến đường thẳng đi qua s.p1, s.p2 (không giới hạn đầu mút)
         Vec2 ab = {s.p2.x - s.p1.x, s.p2.y - s.p1.y};
         Vec2 ap = {p.x - s.p1.x, p.y - s.p1.y};
         float l2 = ab.x * ab.x + ab.y * ab.y;
-        if (l2 == 0.0f) return std::sqrt(distSq(p, s.p1));
+        if (l2 == 0.0f)
+            return std::sqrt(distSq(p, s.p1));
         float t = (ap.x * ab.x + ap.y * ab.y) / l2;
         // Không ép t vào khoảng [0, 1] vì là đường thẳng vô hạn
         Vec2 projection = {s.p1.x + t * ab.x, s.p1.y + t * ab.y};
         return std::sqrt(distSq(p, projection));
     }
-    case SH_RAY: {
+    case SH_RAY:
+    {
         Vec2 ab = {s.p2.x - s.p1.x, s.p2.y - s.p1.y};
         Vec2 ap = {p.x - s.p1.x, p.y - s.p1.y};
         float l2 = ab.x * ab.x + ab.y * ab.y;
-        if (l2 == 0.0f) return std::sqrt(distSq(p, s.p1));
+        if (l2 == 0.0f)
+            return std::sqrt(distSq(p, s.p1));
         float t = (ap.x * ab.x + ap.y * ab.y) / l2;
         t = std::max(0.0f, t); // t >= 0 để tạo thành Tia xuất phát từ p1
         Vec2 projection = {s.p1.x + t * ab.x, s.p1.y + t * ab.y};
         return std::sqrt(distSq(p, projection));
     }
-        default:
-            return 1e9;
-        }
+    default:
+        return 1e9;
     }
+}
 
 static void drawShape(const Shape &s, GeometryRenderer &geom)
 {
@@ -418,30 +453,40 @@ static void drawShape(const Shape &s, GeometryRenderer &geom)
     case SH_POLYLINE:
         geom.drawPolyline(s.poly, s.color);
         break;
-    case SH_INFINITE_LINE: {
-        float l, r, b, t; geom.getView(l, r, b, t);
+    case SH_INFINITE_LINE:
+    {
+        float l, r, b, t;
+        geom.getView(l, r, b, t);
         float dynamicRange = std::max(r - l, t - b) * 5.0f; // Kéo dài gấp 5 lần tầm nhìn
         Vec2 dir = {s.p2.x - s.p1.x, s.p2.y - s.p1.y};
         float len = std::sqrt(dir.x * dir.x + dir.y * dir.y);
-        if (len > 1e-6f) {
-            dir.x /= len; dir.y /= len;
+        if (len > 1e-6f)
+        {
+            dir.x /= len;
+            dir.y /= len;
             Vec2 start = {s.p1.x - dir.x * dynamicRange, s.p1.y - dir.y * dynamicRange};
             Vec2 end = {s.p1.x + dir.x * dynamicRange, s.p1.y + dir.y * dynamicRange};
             geom.drawLine(start, end, s.color);
         }
-    } break;
+    }
+    break;
 
-    case SH_RAY: {
-        float l, r, b, t; geom.getView(l, r, b, t);
+    case SH_RAY:
+    {
+        float l, r, b, t;
+        geom.getView(l, r, b, t);
         float dynamicRange = std::max(r - l, t - b) * 5.0f;
         Vec2 dir = {s.p2.x - s.p1.x, s.p2.y - s.p1.y};
         float len = std::sqrt(dir.x * dir.x + dir.y * dir.y);
-        if (len > 1e-6f) {
-            dir.x /= len; dir.y /= len;
+        if (len > 1e-6f)
+        {
+            dir.x /= len;
+            dir.y /= len;
             Vec2 end = {s.p1.x + dir.x * dynamicRange, s.p1.y + dir.y * dynamicRange};
             geom.drawLine(s.p1, end, s.color); // Gốc tại p1
         }
-    } break;
+    }
+    break;
     default:
         break;
     }
@@ -518,9 +563,9 @@ struct AppState
     LineMode lineMode = LN_SEGMENT;
 
     CircleMode circleMode = CIR_CENTER_PT;
-    int circlePointStep = 0;       // Đếm số điểm đã click
-    Vec2 circlePoints[3];          // Lưu tạm 3 tọa độ click
-    float ui_circle_radius = 1.0f; // Bán kính nhập từ UI
+    int circlePointStep = 0;         // Đếm số điểm đã click
+    Vec2 circlePoints[3];            // Lưu tạm 3 tọa độ click
+    float ui_circle_radius = 1.0f;   // Bán kính nhập từ UI
     float ui_rotation_angle = 90.0f; // Góc quay mặc định
     float calculatedAngle = -1.0f;   // Lưu kết quả tính góc
 };
@@ -1144,7 +1189,7 @@ int main()
 
             if (app.currentTool == TOOL_POINT)
             {
-                const char* pModes[] = { "Cursor", "Input", "Midpoint", "Reflect (Pt)", "Reflect (Line)", "Rotate" };
+                const char *pModes[] = {"Cursor", "Input", "Midpoint", "Reflect (Pt)", "Reflect (Line)", "Rotate"};
                 int currentPMode = (int)app.pointMode;
                 if (ImGui::Combo("Point Mode", &currentPMode, pModes, 6))
                 {
@@ -1183,7 +1228,8 @@ int main()
                         ImGui::Text("Step: %s", app.pointStep == 0 ? "Select Point to reflect" : "Select Center Point");
                     else if (app.pointMode == PT_REFLECT_LINE)
                         ImGui::Text("Step: %s", app.pointStep == 0 ? "Select Point" : "Select Mirror Line");
-                    if (app.pointMode == PT_ROTATE) {
+                    if (app.pointMode == PT_ROTATE)
+                    {
                         ImGui::InputFloat("Angle (Deg)", &app.ui_rotation_angle, 1.0f, 5.0f, "%.1f");
                         ImGui::Text("Step: %s", app.pointStep == 0 ? "Select Point" : "Select Center");
                     }
@@ -1191,42 +1237,63 @@ int main()
                         app.pointStep = 0;
                 }
             }
-            if (app.currentTool == TOOL_LINE) {
-                const char* lModes[] = { "Segment", "Infinite Line", "Ray", "Angle Calculator" };
+            if (app.currentTool == TOOL_LINE)
+            {
+                const char *lModes[] = {"Segment", "Infinite Line", "Ray", "Angle", "Perpendicular", "Perp Bisector", "Parallel", "Bisector"};
                 int currentLMode = (int)app.lineMode;
-                
-                if (ImGui::Combo("Line Mode", &currentLMode, lModes, 4)) {
+
+                if (ImGui::Combo("Line Mode", &currentLMode, lModes, 8))
+                {
                     app.lineMode = (LineMode)currentLMode;
-                    
+
                     // Reset toàn bộ trạng thái khi đổi Mode để tránh xung đột logic
-                    app.awaitingSecond = false; 
+                    app.awaitingSecond = false;
                     app.pointStep = 0;
                     app.calculatedAngle = -1.0f; // Reset kết quả tính toán cũ
                 }
 
                 ImGui::Separator();
 
+                if (app.lineMode == LN_PERP || app.lineMode == LN_PARALLEL)
+                    ImGui::Text("Step: %s", app.pointStep == 0 ? "Select a Point" : "Select a Line");
+                else if (app.lineMode == LN_PERP_BISECTOR)
+                    ImGui::Text("Step: Select a Line Segment");
+                else if (app.lineMode == LN_BISECTOR)
+                    ImGui::Text("Step: %s", app.pointStep == 0 ? "Select 1st Line" : "Select 2nd Line");
+
+                if (app.pointStep > 0 && ImGui::Button("Cancel Selection"))
+                    app.pointStep = 0;
+
                 // CHỈ hiển thị logic vẽ nếu KHÔNG PHẢI là Mode tính góc
-                if (app.lineMode != LN_ANGLE) {
-                    if (!app.awaitingSecond) {
-                        if (app.lineMode == LN_RAY) 
+                if (app.lineMode != LN_ANGLE)
+                {
+                    if (!app.awaitingSecond)
+                    {
+                        if (app.lineMode == LN_RAY)
                             ImGui::Text("Click to set Origin point");
-                        else 
+                        else
                             ImGui::Text("Click to set 1st point");
-                    } else {
-                        ImGui::Text("Click to set 2nd point");
-                        if (ImGui::Button("Cancel")) app.awaitingSecond = false;
                     }
-                } 
+                    else
+                    {
+                        ImGui::Text("Click to set 2nd point");
+                        if (ImGui::Button("Cancel"))
+                            app.awaitingSecond = false;
+                    }
+                }
                 // CHỈ hiển thị logic tính góc khi chọn Angle Calculator
-                else {
-                    if (app.calculatedAngle >= 0) {
+                else
+                {
+                    if (app.calculatedAngle >= 0)
+                    {
                         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Result: %.2f deg", app.calculatedAngle);
                     }
                     ImGui::Text("Step: %s", app.pointStep == 0 ? "Select 1st Line" : "Select 2nd Line");
-                    
-                    if (app.pointStep > 0) {
-                        if (ImGui::Button("Reset Selection")) {
+
+                    if (app.pointStep > 0)
+                    {
+                        if (ImGui::Button("Reset Selection"))
+                        {
                             app.pointStep = 0;
                             app.calculatedAngle = -1.0f;
                         }
@@ -1615,303 +1682,186 @@ void canvas_cursor_position_callback(GLFWwindow *window, double xpos, double ypo
 
 void canvas_mouse_button_callback(GLFWwindow *window, int button, int action, int mods)
 {
-    if (ImGui::GetIO().WantCaptureMouse)
-        return;
-    AppState *g = static_cast<AppState *>(glfwGetWindowUserPointer(window));
-    if (!g || !g->geom)
-        return;
+    // 1. Bỏ qua nếu chuột đang tương tác với menu ImGui
+    if (ImGui::GetIO().WantCaptureMouse) return;
 
+    AppState *g = static_cast<AppState *>(glfwGetWindowUserPointer(window));
+    if (!g || !g->geom) return;
+
+    // 2. Lấy tọa độ chuột
     double mx, my;
     glfwGetCursorPos(window, &mx, &my);
     float wx, wy;
     screenToWorld(window, mx, my, wx, wy);
     Vec2 effectivePos = {wx, wy};
 
-    // Nếu bắt dính được điểm snap, dùng tọa độ điểm đó
-    if (g->isHoveringAny)
-        effectivePos = g->hoverPos;
+    // 3. Sử dụng điểm bắt dính (Snapping) nếu có
+    if (g->isHoveringAny) effectivePos = g->hoverPos;
 
-    // --- XỬ LÝ NHẤN CHUỘT TRÁI ---
-    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
+    // --- XỬ LÝ KHI NHẤN CHUỘT (PRESS) ---
+    if (action == GLFW_PRESS)
     {
-
-        // 1. Cập nhật Selection (Chọn hình)
-        g->selectedShapeIndex = g->hoveredShapeIndex;
-        if (g->selectedShapeIndex != -1)
+        if (button == GLFW_MOUSE_BUTTON_LEFT)
         {
-            std::cout << "Selected Shape: " << g->selectedShapeIndex << std::endl;
-        }
+            // Luôn cập nhật selection khi click trái
+            g->selectedShapeIndex = g->hoveredShapeIndex;
 
-        // 3. Nếu KHÔNG phải là kéo điểm thì mới xét tiếp chế độ vẽ
-        // Trường hợp A: Đang ở chế độ VẼ (Draw Mode)
-        if (g->mode == MODE_POINT)
-        {
-            switch (g->currentTool)
+            // TRƯỜNG HỢP A: CHẾ ĐỘ VẼ (DRAW MODE)
+            if (g->mode == MODE_POINT)
             {
-            case TOOL_POINT:
-            {
-                if (g->pointMode == PT_CURSOR)
+                switch (g->currentTool)
                 {
-                    if (g->hoveredShapeIndex != -1)
-                        break; // Tránh vẽ đè
-                    pushUndo(*g);
-                    Shape s;
-                    s.kind = SH_POINT;
-                    s.p1 = effectivePos;
-                    s.pointSize = g->pointSize;
-                    s.color = g->paintColor;
-                    s.name = getNextPointName(g->shapes);
-                    g->shapes.push_back(s);
-                }
-                else if (g->pointMode == PT_MIDPOINT)
-                {
-                    // Chỉ chấp nhận nếu hover trúng một POINT
-                    if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT)
-                    {
-                        if (g->pointStep == 0)
-                        {
-                            g->savedIdx1 = g->hoveredShapeIndex;
-                            g->pointStep = 1;
-                        }
-                        else
-                        {
-                            pushUndo(*g);
-                            Vec2 mid = getMidpoint(g->shapes[g->savedIdx1].p1, g->shapes[g->hoveredShapeIndex].p1);
-                            Shape s;
-                            s.kind = SH_POINT;
-                            s.p1 = mid;
-                            s.color = g->paintColor;
-                            s.name = "Mid_" + g->shapes[g->savedIdx1].name + g->shapes[g->hoveredShapeIndex].name;
-                            g->shapes.push_back(s);
-                            g->pointStep = 0;
-                        }
+                case TOOL_POINT:
+                    if (g->pointMode == PT_CURSOR) {
+                        if (g->hoveredShapeIndex != -1) break; 
+                        pushUndo(*g);
+                        Shape s; s.kind = SH_POINT; s.p1 = effectivePos;
+                        s.pointSize = g->pointSize; s.color = g->paintColor;
+                        s.name = getNextPointName(g->shapes);
+                        g->shapes.push_back(s);
                     }
-                }
-                else if (g->pointMode == PT_REFLECT_PT)
-                {
-                    if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT)
-                    {
-                        if (g->pointStep == 0)
-                        {
-                            g->savedIdx1 = g->hoveredShapeIndex;
-                            g->pointStep = 1;
-                        }
-                        else
-                        {
-                            pushUndo(*g);
-                            Vec2 ref = reflectPointPoint(g->shapes[g->savedIdx1].p1, g->shapes[g->hoveredShapeIndex].p1);
-                            Shape s;
-                            s.kind = SH_POINT;
-                            s.p1 = ref;
-                            s.color = g->paintColor;
-                            s.name = g->shapes[g->savedIdx1].name + "'";
-                            g->shapes.push_back(s);
-                            g->pointStep = 0;
-                        }
-                    }
-                }
-                else if (g->pointMode == PT_REFLECT_LINE)
-                {
-                    if (g->pointStep == 0)
-                    {
-                        // Bước 1: Chọn điểm
-                        if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT)
-                        {
-                            g->savedIdx1 = g->hoveredShapeIndex;
-                            g->pointStep = 1;
-                        }
-                    }
-                    else
-                    {
-                        // Bước 2: Chọn đường thẳng
-                        if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_LINE)
-                        {
-                            pushUndo(*g);
-                            Shape &line = g->shapes[g->hoveredShapeIndex];
-                            Vec2 ref = reflectPointLine(g->shapes[g->savedIdx1].p1, line.p1, line.p2);
-                            Shape s;
-                            s.kind = SH_POINT;
-                            s.p1 = ref;
-                            s.color = g->paintColor;
-                            s.name = g->shapes[g->savedIdx1].name + "_l";
-                            g->shapes.push_back(s);
-                            g->pointStep = 0;
-                        }
-                    }
-                } else if (g->pointMode == PT_ROTATE) {
-                    if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT) {
-                        if (g->pointStep == 0) {
-                            g->savedIdx1 = g->hoveredShapeIndex;
-                            g->pointStep = 1;
-                        } else {
-                            pushUndo(*g);
-                            Vec2 rotated = rotatePoint(g->shapes[g->savedIdx1].p1, g->shapes[g->hoveredShapeIndex].p1, g->ui_rotation_angle);
-                            Shape s; s.kind = SH_POINT; s.p1 = rotated; s.color = g->paintColor;
-                            s.name = g->shapes[g->savedIdx1].name + "_rot";
-                            g->shapes.push_back(s);
-                            g->pointStep = 0;
-                        }
-                    }
-                }
-            }
-            break;
-
-            case TOOL_LINE: {
-                if (g->lineMode == LN_ANGLE) {
-                    // Chỉ chọn các loại đường (Line, Infinite, Ray)
-                    if (g->hoveredShapeIndex != -1) {
-                        ShapeKind k = g->shapes[g->hoveredShapeIndex].kind;
-                        if (k == SH_LINE || k == SH_INFINITE_LINE || k == SH_RAY) {
+                    else if (g->pointMode == PT_MIDPOINT || g->pointMode == PT_REFLECT_PT || g->pointMode == PT_ROTATE) {
+                        if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT) {
                             if (g->pointStep == 0) {
-                                g->savedIdx1 = g->hoveredShapeIndex;
-                                g->pointStep = 1;
+                                g->savedIdx1 = g->hoveredShapeIndex; g->pointStep = 1;
                             } else {
-                                Shape &s1 = g->shapes[g->savedIdx1];
-                                Shape &s2 = g->shapes[g->hoveredShapeIndex];
-                                g->calculatedAngle = getAngleBetweenLines(s1.p1, s1.p2, s2.p1, s2.p2);
+                                pushUndo(*g);
+                                Shape s; s.kind = SH_POINT; s.color = g->paintColor;
+                                if (g->pointMode == PT_MIDPOINT) {
+                                    s.p1 = getMidpoint(g->shapes[g->savedIdx1].p1, g->shapes[g->hoveredShapeIndex].p1);
+                                    s.name = "M_" + g->shapes[g->savedIdx1].name + g->shapes[g->hoveredShapeIndex].name;
+                                } else if (g->pointMode == PT_REFLECT_PT) {
+                                    s.p1 = reflectPointPoint(g->shapes[g->savedIdx1].p1, g->shapes[g->hoveredShapeIndex].p1);
+                                    s.name = g->shapes[g->savedIdx1].name + "'";
+                                } else {
+                                    s.p1 = rotatePoint(g->shapes[g->savedIdx1].p1, g->shapes[g->hoveredShapeIndex].p1, g->ui_rotation_angle);
+                                    s.name = g->shapes[g->savedIdx1].name + "r";
+                                }
+                                g->shapes.push_back(s); g->pointStep = 0;
+                            }
+                        }
+                    }
+                    else if (g->pointMode == PT_REFLECT_LINE) {
+                        if (g->pointStep == 0) {
+                            if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT) {
+                                g->savedIdx1 = g->hoveredShapeIndex; g->pointStep = 1;
+                            }
+                        } else {
+                            if (g->hoveredShapeIndex != -1 && (g->shapes[g->hoveredShapeIndex].kind == SH_LINE || g->shapes[g->hoveredShapeIndex].kind == SH_INFINITE_LINE)) {
+                                pushUndo(*g);
+                                Shape &line = g->shapes[g->hoveredShapeIndex];
+                                Shape s; s.kind = SH_POINT; s.color = g->paintColor;
+                                s.p1 = reflectPointLine(g->shapes[g->savedIdx1].p1, line.p1, line.p2);
+                                s.name = g->shapes[g->savedIdx1].name + "_l";
+                                g->shapes.push_back(s); g->pointStep = 0;
+                            }
+                        }
+                    }
+                    break;
+
+                case TOOL_LINE:
+                    if (g->lineMode == LN_PERP_BISECTOR) {
+                        if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_LINE) {
+                            pushUndo(*g);
+                            Shape &base = g->shapes[g->hoveredShapeIndex];
+                            Vec2 mid = getMidpoint(base.p1, base.p2);
+                            Vec2 dir = {base.p2.x - base.p1.x, base.p2.y - base.p1.y};
+                            Vec2 perp = {-dir.y, dir.x};
+                            Shape s; s.kind = SH_INFINITE_LINE; s.p1 = mid; s.p2 = {mid.x + perp.x, mid.y + perp.y};
+                            s.color = g->paintColor; g->shapes.push_back(s);
+                        }
+                    }
+                    else if (g->lineMode == LN_PERP || g->lineMode == LN_PARALLEL) {
+                        if (g->pointStep == 0) {
+                            if (g->hoveredShapeIndex != -1 && g->shapes[g->hoveredShapeIndex].kind == SH_POINT) {
+                                g->savedIdx1 = g->hoveredShapeIndex; g->pointStep = 1;
+                            }
+                        } else {
+                            if (g->hoveredShapeIndex != -1 && (g->shapes[g->hoveredShapeIndex].kind == SH_LINE || g->shapes[g->hoveredShapeIndex].kind == SH_INFINITE_LINE)) {
+                                pushUndo(*g);
+                                Vec2 dir = {g->shapes[g->hoveredShapeIndex].p2.x - g->shapes[g->hoveredShapeIndex].p1.x, g->shapes[g->hoveredShapeIndex].p2.y - g->shapes[g->hoveredShapeIndex].p1.y};
+                                Vec2 fDir = (g->lineMode == LN_PERP) ? Vec2{-dir.y, dir.x} : dir;
+                                Shape s; s.kind = SH_INFINITE_LINE; s.p1 = g->shapes[g->savedIdx1].p1;
+                                s.p2 = {s.p1.x + fDir.x, s.p1.y + fDir.y};
+                                s.color = g->paintColor; g->shapes.push_back(s); g->pointStep = 0;
+                            }
+                        }
+                    }
+                    else if (g->lineMode == LN_BISECTOR || g->lineMode == LN_ANGLE) {
+                        if (g->hoveredShapeIndex != -1 && (g->shapes[g->hoveredShapeIndex].kind == SH_LINE || g->shapes[g->hoveredShapeIndex].kind == SH_INFINITE_LINE || g->shapes[g->hoveredShapeIndex].kind == SH_RAY)) {
+                            if (g->pointStep == 0) {
+                                g->savedIdx1 = g->hoveredShapeIndex; g->pointStep = 1;
+                            } else {
+                                if (g->lineMode == LN_ANGLE) {
+                                    g->calculatedAngle = getAngleBetweenLines(g->shapes[g->savedIdx1].p1, g->shapes[g->savedIdx1].p2, g->shapes[g->hoveredShapeIndex].p1, g->shapes[g->hoveredShapeIndex].p2);
+                                } else {
+                                    Vec2 inter;
+                                    if (getLineIntersection(g->shapes[g->savedIdx1].p1, g->shapes[g->savedIdx1].p2, g->shapes[g->hoveredShapeIndex].p1, g->shapes[g->hoveredShapeIndex].p2, inter)) {
+                                        pushUndo(*g);
+                                        Vec2 v1 = normalizeVec({g->shapes[g->savedIdx1].p2.x - g->shapes[g->savedIdx1].p1.x, g->shapes[g->savedIdx1].p2.y - g->shapes[g->savedIdx1].p1.y});
+                                        Vec2 v2 = normalizeVec({g->shapes[g->hoveredShapeIndex].p2.x - g->shapes[g->hoveredShapeIndex].p1.x, g->shapes[g->hoveredShapeIndex].p2.y - g->shapes[g->hoveredShapeIndex].p1.y});
+                                        Vec2 bDir = {v1.x + v2.x, v1.y + v2.y};
+                                        Shape s; s.kind = SH_INFINITE_LINE; s.p1 = inter; s.p2 = {inter.x + bDir.x, inter.y + bDir.y};
+                                        s.color = g->paintColor; g->shapes.push_back(s);
+                                    }
+                                }
                                 g->pointStep = 0;
                             }
                         }
                     }
-                } else {
-                    if (!g->awaitingSecond) {
-                        g->tempP1 = effectivePos;
-                        g->awaitingSecond = true;
-                    } else {
-                        pushUndo(*g);
-                        Shape s;
-                        // Quyết định Kind dựa trên Mode đang chọn
-                        if (g->lineMode == LN_SEGMENT) s.kind = SH_LINE;
-                        else if (g->lineMode == LN_INFINITE) s.kind = SH_INFINITE_LINE;
-                        else if (g->lineMode == LN_RAY) s.kind = SH_RAY;
-
-                        s.p1 = g->tempP1;
-                        s.p2 = effectivePos;
-                        s.color = g->paintColor;
-                        g->shapes.push_back(s);
-                        g->awaitingSecond = false;
-                    }
-                }
-            } break;
-
-            case TOOL_CIRCLE:
-            {
-                // Lưu điểm vừa click vào mảng tạm
-                g->circlePoints[g->circlePointStep] = effectivePos;
-                g->circlePointStep++;
-
-                if (g->circleMode == CIR_CENTER_PT)
-                {
-                    if (g->circlePointStep == 2)
-                    {
-                        pushUndo(*g);
-                        Shape s;
-                        s.kind = SH_CIRCLE;
-                        s.p1 = g->circlePoints[0];                               // Tâm
-                        s.radius = dist(g->circlePoints[0], g->circlePoints[1]); // Tính R
-                        s.color = g->paintColor;
-                        s.segments = 200;
-                        g->shapes.push_back(s);
-                        g->circlePointStep = 0; // Reset
-                    }
-                }
-                else if (g->circleMode == CIR_CENTER_RAD)
-                {
-                    // Chỉ cần lấy tâm, việc vẽ sẽ kích hoạt qua nút "Draw" trên UI
-                    // (Hoặc bạn có thể vẽ luôn nếu muốn)
-                }
-                else if (g->circleMode == CIR_3PTS)
-                {
-                    if (g->circlePointStep == 3)
-                    {
-                        Vec2 center;
-                        float rad;
-                        if (calculateCircumcircle(g->circlePoints[0], g->circlePoints[1], g->circlePoints[2], center, rad))
-                        {
-                            pushUndo(*g);
-                            Shape s;
-                            s.kind = SH_CIRCLE;
-                            s.p1 = center;
-                            s.radius = rad;
-                            s.color = g->paintColor;
-                            s.segments = 200;
-                            g->shapes.push_back(s);
+                    else { // Vẽ Line/Ray/Infinite mặc định
+                        if (!g->awaitingSecond) { g->tempP1 = effectivePos; g->awaitingSecond = true; }
+                        else {
+                            pushUndo(*g); Shape s; s.p1 = g->tempP1; s.p2 = effectivePos; s.color = g->paintColor;
+                            if (g->lineMode == LN_SEGMENT) s.kind = SH_LINE;
+                            else if (g->lineMode == LN_INFINITE) s.kind = SH_INFINITE_LINE;
+                            else if (g->lineMode == LN_RAY) s.kind = SH_RAY;
+                            g->shapes.push_back(s); g->awaitingSecond = false;
                         }
-                        g->circlePointStep = 0; // Reset
                     }
+                    break;
+
+                case TOOL_CIRCLE:
+                    g->circlePoints[g->circlePointStep++] = effectivePos;
+                    if (g->circleMode == CIR_CENTER_PT && g->circlePointStep == 2) {
+                        pushUndo(*g); Shape s; s.kind = SH_CIRCLE; s.p1 = g->circlePoints[0];
+                        s.radius = dist(g->circlePoints[0], g->circlePoints[1]);
+                        s.color = g->paintColor; g->shapes.push_back(s); g->circlePointStep = 0;
+                    } else if (g->circleMode == CIR_3PTS && g->circlePointStep == 3) {
+                        Vec2 c; float r;
+                        if (calculateCircumcircle(g->circlePoints[0], g->circlePoints[1], g->circlePoints[2], c, r)) {
+                            pushUndo(*g); Shape s; s.kind = SH_CIRCLE; s.p1 = c; s.radius = r;
+                            s.color = g->paintColor; g->shapes.push_back(s);
+                        }
+                        g->circlePointStep = 0;
+                    }
+                    break;
+
+                case TOOL_ELLIPSE: g->tempP1 = effectivePos; g->ellipseCenterSet = true; break;
+                case TOOL_PARABOLA: g->tempP1 = effectivePos; g->parabolaVertexSet = true; break;
+                case TOOL_HYPERBOLA: g->tempP1 = effectivePos; g->hyperbolaCenterSet = true; break;
+                case TOOL_POLYLINE:
+                    if (!g->polylineActive) { g->polylineActive = true; g->tempPoly.clear(); }
+                    g->tempPoly.push_back(effectivePos);
+                    break;
                 }
             }
-            break;
-
-            case TOOL_ELLIPSE:
-            {
-                g->tempP1 = effectivePos;
-                g->ellipseCenterSet = true;
+            // TRƯỜNG HỢP B: CHẾ ĐỘ NAVIGATE
+            else {
+                dragging = true;
+                glfwGetCursorPos(window, &lastX, &lastY);
             }
-            break;
-
-            case TOOL_POLYLINE:
-            {
-                if (!g->polylineActive)
-                {
-                    g->polylineActive = true;
-                    g->tempPoly.clear();
-                }
-                g->tempPoly.push_back(effectivePos);
-            }
-            break;
-
-            case TOOL_PARABOLA:
-            {
-                g->tempP1 = effectivePos; // Lưu vị trí click làm Đỉnh
-                g->parabolaVertexSet = true;
-                // Chờ nhấn nút "Draw" trên UI
-            }
-            break;
-
-            case TOOL_HYPERBOLA:
-            {
-                g->tempP1 = effectivePos; // Lưu vị trí click làm Tâm (Center)
-                g->hyperbolaCenterSet = true;
-            }
-            break;
-
-            default:
-                break;
-            }
-            return;
         }
-
-        // Trường hợp B: Đang ở chế độ NAVIGATE hoặc click ra vùng trống -> Panning màn hình
-        dragging = true;
-        glfwGetCursorPos(window, &lastX, &lastY);
+        else if (button == GLFW_MOUSE_BUTTON_RIGHT) { // Hủy lệnh
+            g->awaitingSecond = false; g->pointStep = 0; g->circlePointStep = 0;
+            g->polylineActive = false; g->tempPoly.clear();
+        }
     }
-    return;
-
-    // --- XỬ LÝ NHẢ CHUỘT TRÁI (FIX QUAN TRỌNG) ---
-    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE)
-    {
-        dragging = false;      // Dừng Panning
-        draggingPointIdx = -1; // <--- BẮT BUỘC PHẢI CÓ: Dừng kéo điểm dynamic
-    }
-
-    // --- XỬ LÝ CHUỘT PHẢI (Hủy thao tác) ---
-    if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS)
-    {
-        g->awaitingSecond = false;
-        if (g->polylineActive)
-        {
-            if (g->tempPoly.size() >= 2)
-            {
-                pushUndo(*g);
-                Shape s;
-                s.kind = SH_POLYLINE;
-                s.poly = g->tempPoly;
-                s.color = g->paintColor;
-                g->shapes.push_back(s);
-            }
-            g->polylineActive = false;
-            g->tempPoly.clear();
+    // --- XỬ LÝ KHI NHẢ CHUỘT (RELEASE) ---
+    else if (action == GLFW_RELEASE) {
+        if (button == GLFW_MOUSE_BUTTON_LEFT) {
+            dragging = false;
+            draggingPointIdx = -1;
         }
     }
 }
