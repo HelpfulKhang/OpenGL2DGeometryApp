@@ -126,43 +126,56 @@ public:
         uploadAndDraw(buildVertexBuffer(pts, c), GL_LINE_STRIP);
     }
 
-    // draw grid + axes, with axis more pronounced
-    void drawGrid(float spacing, const Color &colorGrid, const Color &colorAxis) {
+    // [Trong file src/geometry.h]
+
+    // Sửa lại signature hàm để nhận thêm 2 biến bool: showGridLines, showAxisLines
+    void drawGrid(float spacing, const Color &colorGrid, const Color &colorAxis, bool showGridLines, bool showAxisLines) {
         shader.use();
 
-        glLineWidth(1.0f);
-        std::vector<Vec2> lines;
-        lines.clear();
-        float startX = std::floor(left / spacing) * spacing;
-        float endX = std::ceil(right / spacing) * spacing;
-        for (float x = startX; x <= endX; x += spacing) {
-            lines.push_back({ x, bottom });
-            lines.push_back({ x, top });
-        }
-        uploadAndDraw(buildVertexBuffer(lines, colorGrid), GL_LINES);
-        lines.clear();
+        // 1. Vẽ lưới (Grid Lines)
+        if (showGridLines) {
+            glLineWidth(1.0f);
+            std::vector<Vec2> lines;
+            
+            // Vẽ các đường dọc
+            float startX = std::floor(left / spacing) * spacing;
+            float endX = std::ceil(right / spacing) * spacing;
+            for (float x = startX; x <= endX; x += spacing) {
+                lines.push_back({ x, bottom });
+                lines.push_back({ x, top });
+            }
+            uploadAndDraw(buildVertexBuffer(lines, colorGrid), GL_LINES);
+            lines.clear();
 
-        float startY = std::floor(bottom / spacing) * spacing;
-        float endY = std::ceil(top / spacing) * spacing;
-        for (float y = startY; y <= endY; y += spacing) {
-            lines.push_back({ left, y });
-            lines.push_back({ right, y });
+            // Vẽ các đường ngang
+            float startY = std::floor(bottom / spacing) * spacing;
+            float endY = std::ceil(top / spacing) * spacing;
+            for (float y = startY; y <= endY; y += spacing) {
+                lines.push_back({ left, y });
+                lines.push_back({ right, y });
+            }
+            uploadAndDraw(buildVertexBuffer(lines, colorGrid), GL_LINES);
+            lines.clear();
         }
-        uploadAndDraw(buildVertexBuffer(lines, colorGrid), GL_LINES);
-        lines.clear();
 
-        // draw axes thicker and brighter
-        glLineWidth(3.5f);
-        if (left <= 0.0f && right >= 0.0f) {
-            lines.push_back({ 0.0f, bottom });
-            lines.push_back({ 0.0f, top });
+        // 2. Vẽ trục (Axis Lines)
+        if (showAxisLines) {
+            glLineWidth(3.5f); // Nét đậm cho trục
+            std::vector<Vec2> axisLines;
+            
+            // Trục Y (x = 0)
+            if (left <= 0.0f && right >= 0.0f) {
+                axisLines.push_back({ 0.0f, bottom });
+                axisLines.push_back({ 0.0f, top });
+            }
+            // Trục X (y = 0)
+            if (bottom <= 0.0f && top >= 0.0f) {
+                axisLines.push_back({ left, 0.0f });
+                axisLines.push_back({ right, 0.0f });
+            }
+            if (!axisLines.empty()) uploadAndDraw(buildVertexBuffer(axisLines, colorAxis), GL_LINES);
+            glLineWidth(1.0f); // Reset lại độ dày nét
         }
-        if (bottom <= 0.0f && top >= 0.0f) {
-            lines.push_back({ left, 0.0f });
-            lines.push_back({ right, 0.0f });
-        }
-        if (!lines.empty()) uploadAndDraw(buildVertexBuffer(lines, colorAxis), GL_LINES);
-        glLineWidth(1.0f);
     }
 
     void drawText(const std::string& text, float x, float y, const Color& color) {

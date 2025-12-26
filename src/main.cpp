@@ -166,6 +166,9 @@ struct AppState {
     std::vector<std::vector<Shape>> undoStack;
     std::vector<std::vector<Shape>> redoStack;
     size_t maxUndo = 60;
+
+    bool showGrid = true;
+    bool showAxis = true;
 };
 
 // Undo/Redo Helpers
@@ -390,7 +393,7 @@ int main()
         while (spacing * 10.0f < worldWidth) spacing *= 2.0f;
         while (spacing * 2.0f > worldWidth && spacing > 1e-6f) spacing *= 0.5f;
 
-        geom.drawGrid(spacing, gridCol, axisCol);
+        geom.drawGrid(spacing, gridCol, axisCol, app.showGrid, app.showAxis);
 
         shader.use();
         shader.setInt("u_useOverride", 0);
@@ -435,26 +438,31 @@ int main()
         float startX = std::floor(l / spacing) * spacing;
         float endX = std::ceil(r / spacing) * spacing;
         
-        // Số trên trục X
-        for (float x = startX; x <= endX + 1e-6f; x += spacing) {
-            float worldLabelY = (b <= 0.0f && t >= 0.0f) ? (-labelOffset) : (b + labelOffset);
-            drawLabel(fmtTick(x), x, worldLabelY, l, r, b, t, display_w, display_h, labelCol);
-        }
-        
-        // Số trên trục Y
-        float startY = std::floor(b / spacing) * spacing;
-        float endY = std::ceil(t / spacing) * spacing;
-        for (float y = startY; y <= endY + 1e-6f; y += spacing) {
-            if (std::abs(y) < 1e-5f) continue;
-            float worldLabelX = (l <= 0.0f && r >= 0.0f) ? (labelOffset) : (l + labelOffset);
-            drawLabel(fmtTick(y), worldLabelX, y, l, r, b, t, display_w, display_h, labelCol);
+        if (app.showGrid) {
+            // Số trên trục X
+            for (float x = startX; x <= endX + 1e-6f; x += spacing) {
+                float worldLabelY = (b <= 0.0f && t >= 0.0f) ? (-labelOffset) : (b + labelOffset);
+                drawLabel(fmtTick(x), x, worldLabelY, l, r, b, t, display_w, display_h, labelCol);
+            }
+            
+            // Số trên trục Y
+            float startY = std::floor(b / spacing) * spacing;
+            float endY = std::ceil(t / spacing) * spacing;
+            for (float y = startY; y <= endY + 1e-6f; y += spacing) {
+                if (std::abs(y) < 1e-5f) continue;
+                float worldLabelX = (l <= 0.0f && r >= 0.0f) ? (labelOffset) : (l + labelOffset);
+                drawLabel(fmtTick(y), worldLabelX, y, l, r, b, t, display_w, display_h, labelCol);
+            }
         }
 
-        // --- TÊN TRỤC X, Y ---
         float menuWidth = 320.0f; 
-        float visibleRight = l + (r - l) * ((float)(display_w - menuWidth) / display_w);
-        drawLabel("x", visibleRight - 0.2f * spacing, 0.2f * spacing, l, r, b, t, display_w, display_h, labelCol);
-        drawLabel("y", -0.2f * spacing, t - 0.05f * spacing, l, r, b, t, display_w, display_h, labelCol);
+        // 3. Vẽ tên trục x, y (Chỉ khi showAxis = true)
+        if (app.showAxis) {
+            
+            float visibleRight = l + (r - l) * ((float)(display_w - menuWidth) / display_w);
+            drawLabel("x", visibleRight - 0.2f * spacing, 0.2f * spacing, l, r, b, t, display_w, display_h, labelCol);
+            drawLabel("y", -0.2f * spacing, t - 0.05f * spacing, l, r, b, t, display_w, display_h, labelCol);
+        }
 
         // --- UI ---
         ImGui::SetNextWindowPos(ImVec2((float)display_w - menuWidth, 0));
@@ -466,6 +474,11 @@ int main()
         if (ImGui::RadioButton("Navigate", app.mode == MODE_NAV)) app.mode = MODE_NAV;
         ImGui::SameLine();
         if (ImGui::RadioButton("Draw", app.mode == MODE_POINT)) app.mode = MODE_POINT;
+
+        ImGui::Separator();
+        ImGui::Text("View Options:");
+        ImGui::Checkbox("Show Grid (Lines & Coords)", &app.showGrid);
+        ImGui::Checkbox("Show Axis (Lines & Labels)", &app.showAxis);
 
         ImGui::Separator();
         ImGui::ColorEdit3("Color", &app.drawColor.r);
