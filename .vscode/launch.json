@@ -8,7 +8,7 @@
             "args": [],
             "stopAtEntry": false,
             "externalConsole": true,
-            "cwd": "c:/Users/Administrator/Downloads/test/src",
+            "cwd": "${workspaceFolder}/src",
             "program": "${workspaceFolder}/app.exe",
             "MIMode": "gdb",
             "miDebuggerPath": "gdb",

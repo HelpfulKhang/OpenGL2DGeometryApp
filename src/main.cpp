@@ -200,8 +200,10 @@ struct AppState {
     // Params
     int circleSegments = 96;
     int ellipseSegments = 128;
+    float ellipse_a = 0.4f;
     float ellipse_b = 0.4f;
     float ellipse_angle = 0.0f;
+    bool ellipseCenterSet = false;
     float parab_k = 0.3f;
     float parab_xmin = -1.5f; float parab_xmax = 1.5f;
     int parab_segments = 300;
@@ -643,6 +645,32 @@ int main()
             }
             if (app.currentTool == TOOL_POINT_CURSOR) ImGui::SliderFloat("Size", &app.pointSize, 1.0f, 20.0f);
             if (app.currentTool == TOOL_CIRCLE) ImGui::SliderInt("Segs", &app.circleSegments, 16, 128);
+            if (app.currentTool == TOOL_ELLIPSE) {
+                ImGui::Separator();
+                ImGui::Text("Select a center point");
+                
+                if (app.ellipseCenterSet) {
+                    // Nhập hệ số a và b
+                    ImGui::InputFloat("rx", &app.ellipse_a, 0.1f, 0.5f, "%.2f");
+                    ImGui::InputFloat("ry", &app.ellipse_b, 0.1f, 0.5f, "%.2f");
+                    
+                    // Nút Vẽ
+                    if (ImGui::Button("Draw", ImVec2(-1.0f, 0.0f))) {
+                        pushUndo(app);
+                        Shape s;
+                        s.kind = SH_ELLIPSE;
+                        s.p1 = app.tempP1; // Tâm đã chọn từ click
+                        s.a = app.ellipse_a;
+                        s.b = app.ellipse_b;
+                        s.angle = 0.0f; // Bạn có thể thêm input cho góc nếu muốn
+                        s.color = app.paintColor;
+                        s.segments = app.ellipseSegments;
+                        
+                        app.shapes.push_back(s);
+                        app.ellipseCenterSet = false; // Reset sau khi vẽ xong
+                    }
+                }
+            }
             if (app.currentTool == TOOL_POLYLINE && app.polylineActive) {
                 if (ImGui::Button("Finish Polyline")) {
                     if (app.tempPoly.size() >= 2) {
@@ -916,17 +944,8 @@ void canvas_mouse_button_callback(GLFWwindow* window, int button, int action, in
                     } break;
 
                     case TOOL_ELLIPSE: {
-                         if (!g->awaitingSecond) {
-                            g->tempP1 = effectivePos; g->awaitingSecond = true;
-                        } else {
-                            pushUndo(*g);
-                            float dx = effectivePos.x - g->tempP1.x; float dy = effectivePos.y - g->tempP1.y;
-                            Shape s; s.kind = SH_ELLIPSE; s.p1 = g->tempP1;
-                            s.a = std::sqrt(dx*dx + dy*dy); s.b = g->ellipse_b; s.angle = g->ellipse_angle;
-                            s.segments = g->ellipseSegments; s.color = g->paintColor;
-                            g->shapes.push_back(s);
-                            g->awaitingSecond = false;
-                        }
+                        g->tempP1 = effectivePos; 
+                        g->ellipseCenterSet = true;
                     } break;
 
                     case TOOL_POLYLINE: {
